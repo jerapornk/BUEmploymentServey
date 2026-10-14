@@ -1,0 +1,194 @@
+{
+  "entities": {
+    "Admin": {
+      "title": "Admin",
+      "description": "Administrator user record",
+      "type": "object",
+      "properties": {
+        "email": {
+          "type": "string",
+          "description": "Email address of the administrator"
+        },
+        "role": {
+          "type": "string",
+          "description": "User role, strictly 'admin'"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Timestamp when the admin was added"
+        }
+      },
+      "required": ["email", "role"]
+    },
+    "Graduate": {
+      "title": "Graduate",
+      "description": "Roster of eligible graduates loaded via CSV",
+      "type": "object",
+      "properties": {
+        "studentId": {
+          "type": "string",
+          "description": "Student Identification Number of the graduate"
+        },
+        "fullName": {
+          "type": "string",
+          "description": "Full name of the graduate"
+        },
+        "faculty": {
+          "type": "string",
+          "description": "Faculty/School name of the graduate"
+        },
+        "major": {
+          "type": "string",
+          "description": "Department/Major of the graduate"
+        },
+        "academicYear": {
+          "type": "string",
+          "description": "Academic Year group (e.g. 2567)"
+        }
+      },
+      "required": ["studentId", "fullName", "faculty", "major", "academicYear"]
+    },
+    "SurveyResponse": {
+      "title": "SurveyResponse",
+      "description": "Submitted employment survey responses",
+      "type": "object",
+      "properties": {
+        "studentId": {
+          "type": "string",
+          "description": "Student ID of the respondent"
+        },
+        "firstName": {
+          "type": "string",
+          "description": "First name of respondent"
+        },
+        "lastName": {
+          "type": "string",
+          "description": "Last name of respondent"
+        },
+        "faculty": {
+          "type": "string",
+          "description": "Graduated Faculty"
+        },
+        "major": {
+          "type": "string",
+          "description": "Graduated Major/Department"
+        },
+        "phone": {
+          "type": "string",
+          "description": "Contact telephone number"
+        },
+        "email": {
+          "type": "string",
+          "description": "Contact email address"
+        },
+        "academicYear": {
+          "type": "string",
+          "description": "Academic year of graduation, e.g. 2567 or 2568"
+        },
+        "surveyMonth": {
+          "type": "string",
+          "description": "Month of submitting the survey (01-12)"
+        },
+        "status": {
+          "type": "string",
+          "enum": ["employed", "unemployed", "not_seeking"],
+          "description": "Current employment status"
+        },
+        "employedDetails": {
+          "type": "object",
+          "description": "Detailed answers for employed graduates"
+        },
+        "unemployedDetails": {
+          "type": "object",
+          "description": "Detailed answers for unemployed graduates"
+        },
+        "notSeekingDetails": {
+          "type": "object",
+          "description": "Detailed answers for graduates not seeking employment"
+        },
+        "suggestions": {
+          "type": "object",
+          "description": "Feedback and suggestions for university improvement"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Submission server timestamp"
+        }
+      },
+      "required": [
+        "studentId",
+        "firstName",
+        "lastName",
+        "faculty",
+        "major",
+        "phone",
+        "email",
+        "academicYear",
+        "surveyMonth",
+        "status",
+        "createdAt"
+      ]
+    },
+    "Question": {
+      "title": "Question",
+      "description": "Additional custom survey questions added by Admin",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Question identifier"
+        },
+        "title": {
+          "type": "string",
+          "description": "Text of the custom question"
+        },
+        "type": {
+          "type": "string",
+          "enum": ["text", "choice"],
+          "description": "Input type"
+        },
+        "options": {
+          "type": "array",
+          "description": "List of options if type is choice"
+        },
+        "section": {
+          "type": "string",
+          "enum": ["general", "employed", "unemployed", "not_seeking"],
+          "description": "Target section for display"
+        },
+        "required": {
+          "type": "boolean"
+        }
+      },
+      "required": ["id", "title", "type", "section"]
+    }
+  },
+  "firestore": {
+    "admins/{adminId}": {
+      "schema": {
+        "$ref": "#/entities/Admin"
+      },
+      "description": "User records for managers/administrators"
+    },
+    "graduates/{graduateId}": {
+      "schema": {
+        "$ref": "#/entities/Graduate"
+      },
+      "description": "Verified lists of graduates from CSV imports"
+    },
+    "survey_responses/{responseId}": {
+      "schema": {
+        "$ref": "#/entities/SurveyResponse"
+      },
+      "description": "Submitted student employment survey responses"
+    },
+    "questions/{questionId}": {
+      "schema": {
+        "$ref": "#/entities/Question"
+      },
+      "description": "Additional customizable survey questions"
+    }
+  }
+}

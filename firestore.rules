@@ -1,0 +1,106 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Global Safety Net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Hardened Global Helpers
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isAdmin() {
+      return isSignedIn() && (
+        ('email' in request.auth.token && request.auth.token.email.lower() == 'jeraporn.k@bu.ac.th') ||
+        ('email' in request.auth.token && request.auth.token.email.lower().endsWith('@bu.ac.th')) ||
+        ('email' in request.auth.token && exists(/databases/$(database)/documents/admins/$(request.auth.token.email.lower()))) ||
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid))
+      );
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    // Entity Validations
+    function isValidAdmin(data) {
+      return data.email is string && data.email.size() <= 128 &&
+             data.role == 'admin';
+    }
+
+    function isValidGraduate(data) {
+      return data.studentId is string && data.studentId.size() <= 100 &&
+             data.fullName is string && data.fullName.size() <= 300 &&
+             data.faculty is string && data.faculty.size() <= 300 &&
+             data.major is string && data.major.size() <= 300 &&
+             data.academicYear is string && data.academicYear.size() <= 50 &&
+             (!('degreeLevel' in data) || (data.degreeLevel is string && data.degreeLevel.size() <= 100));
+    }
+
+    function isValidSurveyResponse(data) {
+      return data.studentId is string && data.studentId.size() <= 100 &&
+             data.firstName is string && data.firstName.size() <= 200 &&
+             data.lastName is string && data.lastName.size() <= 200 &&
+             data.faculty is string && data.faculty.size() <= 300 &&
+             data.major is string && data.major.size() <= 300 &&
+             data.phone is string && data.phone.size() <= 100 &&
+             data.email is string && data.email.size() <= 200 &&
+             data.academicYear is string && data.academicYear.size() <= 20 &&
+             data.surveyMonth is string && data.surveyMonth.size() <= 100 &&
+             data.status is string && (data.status == 'employed' || data.status == 'unemployed' || data.status == 'not_seeking') &&
+             (!('degreeLevel' in data) || (data.degreeLevel is string && data.degreeLevel.size() <= 100)) &&
+             data.createdAt is timestamp;
+    }
+
+    function isValidQuestion(data) {
+      return data.id is string && data.id.size() <= 128 &&
+             data.title is string && data.title.size() <= 500 &&
+             data.type is string && (data.type == 'text' || data.type == 'choice') &&
+             data.section is string && (data.section == 'general' || data.section == 'employed' || data.section == 'unemployed' || data.section == 'not_seeking');
+    }
+
+    // Rules for Admins Collection
+    match /admins/{adminId} {
+      allow read: if isSignedIn();
+      allow create, update: if (isAdmin() || (isSignedIn() && 'email' in request.auth.token && request.auth.token.email.lower() == 'jeraporn.k@bu.ac.th')) && isValidAdmin(incoming());
+      allow delete: if isAdmin();
+    }
+
+    // Rules for Graduates Collection (Roster)
+    match /graduates/{graduateId} {
+      allow read: if true; // Allows students to check if they are in the database via query or direct lookup
+      allow create, update: if isAdmin() && isValidGraduate(incoming());
+      allow delete: if isAdmin();
+    }
+
+    // Rules for Survey Responses Collection
+    match /survey_responses/{responseId} {
+      allow create: if isValidSurveyResponse(incoming());
+      allow read: if true; // Allows admin and student checks
+      allow update, delete: if isAdmin();
+    }
+
+    // Rules for Custom Questions Collection
+    match /questions/{questionId} {
+      allow read: if true; // Students need to read extra questions to fill them
+      allow create, update: if isAdmin() && isValidQuestion(incoming());
+      allow delete: if isAdmin();
+    }
+
+    // Rules for Connection Verification Test
+    match /test/{documentId} {
+      allow read, write: if true;
+    }
+  }
+}

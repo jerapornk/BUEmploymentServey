@@ -1,0 +1,6 @@
+{
+  "name": "BU Graduate Employment Survey",
+  "description": "แบบสำรวจภาวะการมีงานทำของบัณฑิต มหาบัณฑิต และดุษฎีบัณฑิต มหาวิทยาลัยกรุงเทพ ประจำปี 2568 (ปีการศึกษา 2567)",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

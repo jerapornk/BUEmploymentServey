@@ -1,3 +1,5 @@
+import { EntrepreneurQuestion, SurveyConfig } from './types';
+
 export const FACULTIES = [
   "คณะเทคโนโลยีสารสนเทศและนวัตกรรม",
   "คณะวิศวกรรมศาสตร์",
@@ -331,7 +333,7 @@ export const MONTHS = [
   { value: "12", label: "ธันวาคม" }
 ];
 
-export const ACADEMIC_YEARS = ["2567", "2568"];
+export const ACADEMIC_YEARS = ["2569", "2568", "2567"];
 
 export const DEGREE_LEVELS = [
   { value: "ระดับปริญญาตรี", labelTh: "ระดับปริญญาตรี", labelEn: "Bachelor's Degree", shortTh: "ป.ตรี" },
@@ -366,3 +368,72 @@ export const STUB_GRADUATES = [
     degreeLevel: "ระดับปริญญาเอก"
   }
 ];
+
+export const DEFAULT_ENTREPRENEUR_QUESTIONS: EntrepreneurQuestion[] = [
+  {
+    id: 1,
+    th: "ดำเนินธุรกิจบนพื้นฐานของคุณธรรมจริยธรรม พร้อมตระหนักถึงความรับผิดชอบต่อสังคม",
+    en: "Conducts business based on ethical principles and moral integrity, with a clear awareness of social responsibility."
+  },
+  {
+    id: 2,
+    th: "มีความรู้ความเชี่ยวชาญในสาขาวิชาและสามารถนำไปประยุกต์ใช้ได้",
+    en: "Possesses knowledge and expertise in the field of study and can apply this knowledge effectively."
+  },
+  {
+    id: 3,
+    th: "มีกระบวนการคิด/ตัดสินใจ และแก้ไขปัญหาที่ซับซ้อนได้อย่างเป็นระบบ",
+    en: "Demonstrates systematic thinking, decision-making, and the ability to solve complex problems effectively."
+  },
+  {
+    id: 4,
+    th: "มีมนุษยสัมพันธ์ที่ดีและสามารถทำงานร่วมกับผู้อื่นได้",
+    en: "Exhibits good interpersonal skills and is able to work effectively with others."
+  },
+  {
+    id: 5,
+    th: "การใช้เครื่องมือทางคณิตศาสตร์/สถิติในการวิเคราะห์ข้อมูล และใช้เทคโนโลยีสารสนเทศในการนำเสนอผลงานได้อย่างเหมาะสม",
+    en: "Uses mathematical and statistical tools to analyze data and employs information technology appropriately for presenting work."
+  },
+  {
+    id: 6,
+    th: "การสร้างสรรค์นวัตกรรมใหม่ๆ เพื่อใช้ในการปรับปรุงประสิทธิภาพการทำงาน",
+    en: "Creates new innovations to improve work efficiency."
+  },
+  {
+    id: 7,
+    th: "มีจิตวิญญาณความเป็นผู้ประกอบการ",
+    en: "Demonstrates an entrepreneurial mindset."
+  },
+  {
+    id: 8,
+    th: "การใช้ภาษาต่างประเทศในการปฏิบัติงาน เช่น การสื่อสาร การประสานงาน",
+    en: "Utilizes foreign languages in work-related tasks, such as communication and coordination."
+  },
+  {
+    id: 9,
+    th: "การรู้จัดการตั้งคำถามเพื่อค้นหาข้อเท็จจริงและโอกาสทางธุรกิจใหม่ๆ",
+    en: "Knows how to ask questions to identify facts and explore new business opportunities."
+  },
+  {
+    id: 10,
+    th: "มีความใฝ่เรียนรู้และปรับตัวอย่างต่อเนื่อง เพื่อให้ทันต่อการเปลี่ยนแปลงในโลกดิจิทัล",
+    en: "Demonstrates continuous learning and adaptability to keep pace with changes in the digital world."
+  }
+];
+
+export const DEFAULT_SURVEY_CONFIG: SurveyConfig = {
+  titleTh: "แบบสำรวจภาวะการมีงานทำของบัณฑิต มหาวิทยาลัยกรุงเทพ",
+  titleEn: "Bangkok University Graduate Employment Survey",
+  descriptionTh: "ระบบสำรวจข้อมูลการมีงานทำ ประวัติการทำงาน และการประเมินทักษะ เพื่อการพัฒนาหลักสูตรและการประกันคุณภาพการศึกษา มหาวิทยาลัยกรุงเทพ",
+  descriptionEn: "Survey system on employment status, career history, and competency assessment for curriculum enhancement and quality assurance, Bangkok University.",
+  bannerNoticeTh: "กรุณากรอกข้อมูลตามความเป็นจริง เพื่อเป็นประโยชน์ต่อการพัฒนาหลักสูตรและรุ่นน้อง ข้อมูลของท่านจะถูกเก็บรักษาเป็นความลับตามมาตรฐานความปลอดภัย",
+  bannerNoticeEn: "Please provide accurate information to benefit curriculum development and future students. Your information is kept strictly confidential according to privacy standards.",
+  targetAcademicYear: "2568",
+  contactOffice: "สำนักมาตรฐานคุณภาพการศึกษา มหาวิทยาลัยกรุงเทพ",
+  contactPhone: "02-407-3888",
+  contactEmail: "quality@bu.ac.th",
+  entrepreneurQuestions: DEFAULT_ENTREPRENEUR_QUESTIONS,
+  allowEditProfile: true
+};
+

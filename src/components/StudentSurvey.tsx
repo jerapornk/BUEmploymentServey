@@ -20,7 +20,7 @@ import {
   FACULTIES,
   normalizeFacultyName
 } from '../data';
-import { SurveyResponse, Graduate, CustomQuestion } from '../types';
+import { SurveyResponse, Graduate, CustomQuestion, SurveyConfig } from '../types';
 import { TRANSLATIONS } from '../translations';
 import { 
   CheckCircle2, 
@@ -36,7 +36,8 @@ import {
   Award,
   Edit3,
   Check,
-  RotateCcw
+  RotateCcw,
+  Sparkles
 } from 'lucide-react';
 
 interface StudentSurveyProps {
@@ -45,6 +46,12 @@ interface StudentSurveyProps {
   isMobileSim?: boolean;
   language?: 'th' | 'en';
   onLanguageChange?: (lang: 'th' | 'en') => void;
+  surveyConfig?: SurveyConfig;
+  isPreview?: boolean;
+  forcedStep?: number;
+  onStepChange?: (step: number) => void;
+  autoFillTrigger?: number;
+  resetTrigger?: number;
 }
 
 export const ENTREPRENEUR_QUESTIONS = [
@@ -105,12 +112,126 @@ export default function StudentSurvey({
   onSurveySubmitted, 
   isMobileSim,
   language = 'th',
-  onLanguageChange
+  onLanguageChange,
+  surveyConfig,
+  isPreview = false,
+  forcedStep,
+  onStepChange,
+  autoFillTrigger,
+  resetTrigger
 }: StudentSurveyProps) {
   const t = TRANSLATIONS[language];
   // Navigation State
-  const [step, setStep] = useState<1 | 2 | 3 | 4 | 5>(1); // 1: ID check, 2: Profile & General, 3: Employment status, 4: Detailed Questions, 5: Review & Submit
+  const [step, setStep] = useState<1 | 2 | 3 | 4 | 5 | 6>(1); // 1: ID check, 2: Profile & General, 3: Employment status, 4: Detailed Questions, 5: Suggestions, 6: Review & Submit
   
+  const activeEntrepreneurQuestions = surveyConfig?.entrepreneurQuestions && surveyConfig.entrepreneurQuestions.length > 0
+    ? surveyConfig.entrepreneurQuestions
+    : ENTREPRENEUR_QUESTIONS;
+
+  // Track and notify step change
+  const changeStep = (newStep: number | ((prev: any) => any)) => {
+    setStep((prev) => {
+      const next = typeof newStep === 'function' ? newStep(prev) : newStep;
+      if (onStepChange) onStepChange(next);
+      return next;
+    });
+  };
+
+  // Respond to forcedStep changes from preview controller
+  useEffect(() => {
+    if (forcedStep !== undefined && forcedStep >= 1) {
+      setStep(forcedStep as any);
+      if (forcedStep >= 2 && !studentId) {
+        setStudentId('1000000079');
+        setFirstName('ณัฐภัทร');
+        setLastName('บัณฑิตกรุงเทพ');
+        setFaculty('คณะเทคโนโลยีสารสนเทศและนวัตกรรม');
+        setMajor('วิทยาการคอมพิวเตอร์');
+        setAcademicYear(surveyConfig?.targetAcademicYear || '2568');
+        setDegreeLevel('ระดับปริญญาตรี');
+        setPhone('081-234-5678');
+        setEmail('graduate@bu.ac.th');
+        setIsProfileConfirmed(true);
+      }
+    }
+  }, [forcedStep]);
+
+  // Respond to autoFillTrigger from preview controller
+  useEffect(() => {
+    if (autoFillTrigger && autoFillTrigger > 0) {
+      setUserInputId('1000000079');
+      setStudentId('1000000079');
+      setFirstName('ณัฐภัทร');
+      setLastName('บัณฑิตกรุงเทพ');
+      setFaculty('คณะเทคโนโลยีสารสนเทศและนวัตกรรม');
+      setMajor('วิทยาการคอมพิวเตอร์');
+      setAcademicYear(surveyConfig?.targetAcademicYear || '2568');
+      setDegreeLevel('ระดับปริญญาตรี');
+      setPhone('081-234-5678');
+      setEmail('graduate@bu.ac.th');
+      setIsProfileConfirmed(true);
+      setStatus('employed');
+      
+      const sampleRatings: Record<string, number> = {};
+      activeEntrepreneurQuestions.forEach((q, idx) => {
+        sampleRatings[String(q.id)] = 8 + (idx % 3);
+      });
+
+      setEmployedDetails({
+        workType: '3',
+        workTypeOther: '',
+        jobTitle: 'Software Engineer & Tech Lead',
+        companyName: 'บริษัท บียู ดิจิทัล ครีเอทีฟ โซลูชั่นส์ จำกัด',
+        companyDept: 'Digital Technology Innovation Unit',
+        companyAddress: {
+          no: '9/99',
+          moo: '5',
+          building: 'อาคาร BU Creative Hub',
+          floor: '8',
+          soi: 'พหลโยธิน 87',
+          road: 'พหลโยธิน',
+          subdistrict: 'คลองหนึ่ง',
+          district: 'คลองหลวง',
+          province: 'ปทุมธานี',
+          zipcode: '12120'
+        },
+        salary: 35000,
+        hasOtherIncome: true,
+        otherIncomeDetails: 'ที่ปรึกษาเทคโนโลยีและฟรีแลนซ์พัฒนาระบบ AI',
+        otherIncomeAmount: 12000,
+        isRelatedToStudy: true,
+        unrelatedReason: '',
+        timeToGetJob: '1',
+        entrepreneurRatings: sampleRatings
+      });
+
+      setSuggestions({
+        impressions: 'อาจารย์ผู้สอนมีประสบการณ์สูงและพร้อมให้คำปรึกษา อุปกรณ์ห้องแล็บทันสมัย',
+        improvements: 'เพิ่มความร่วมมือกับบริษัทเทคโนโลยีชั้นนำสำหรับการฝึกงานแบบสหกิจศึกษา',
+        skillsToCultivate: 'ทักษะภาษาอังกฤษเพื่อการสื่อสารระดับสากล และการบริหารจัดการโครงการ'
+      });
+      setStep(4);
+      if (onStepChange) onStepChange(4);
+    }
+  }, [autoFillTrigger]);
+
+  // Respond to resetTrigger from preview controller
+  useEffect(() => {
+    if (resetTrigger && resetTrigger > 0) {
+      setUserInputId('');
+      setStudentId('');
+      setFirstName('');
+      setLastName('');
+      setMatchedGraduate(null);
+      setIsProfileConfirmed(false);
+      setVerificationError('');
+      setFormErrors({});
+      setSubmitSuccess(false);
+      setStep(1);
+      if (onStepChange) onStepChange(1);
+    }
+  }, [resetTrigger]);
+
   // ID Verification State
   const [userInputId, setUserInputId] = useState('');
   const [isVerifyingId, setIsVerifyingId] = useState(false);
@@ -156,7 +277,7 @@ export default function StudentSurvey({
       province: 'กรุงเทพมหานคร',
       zipcode: ''
     },
-    salary: 15000,
+    salary: 0,
     hasOtherIncome: false,
     otherIncomeDetails: '',
     otherIncomeAmount: 0,
@@ -303,7 +424,7 @@ export default function StudentSurvey({
         }
 
         if (employedDetails.workType === '6') {
-          ENTREPRENEUR_QUESTIONS.forEach(q => {
+          activeEntrepreneurQuestions.forEach(q => {
             const score = employedDetails.entrepreneurRatings?.[String(q.id)];
             if (!score || score < 1 || score > 10) {
               errors[`entrepreneur_${q.id}`] = language === 'th' ? 'กรุณาให้คะแนนประเมินตนเอง (1-10)' : 'Please rate this self-evaluation (1-10)';
@@ -337,24 +458,36 @@ export default function StudentSurvey({
 
   const handleNextStep = () => {
     if (validateCurrentStep()) {
+      let nextStep = step + 1;
       if (step === 4 && status === 'employed') {
-        setStep(6);
-      } else {
-        setStep((prev) => (prev + 1) as any);
+        nextStep = 6;
       }
+      setStep(nextStep as any);
+      if (onStepChange) onStepChange(nextStep);
     }
   };
 
   const handlePrevStep = () => {
+    let prevStep = step - 1;
     if (step === 6 && status === 'employed') {
-      setStep(4);
-    } else {
-      setStep((prev) => (prev - 1) as any);
+      prevStep = 4;
     }
+    setStep(prevStep as any);
+    if (onStepChange) onStepChange(prevStep);
   };
 
   // Submit survey responses to Firestore
   const handleSubmitSurvey = async () => {
+    if (isPreview) {
+      setIsSubmitting(true);
+      setTimeout(() => {
+        setIsSubmitting(false);
+        setSubmitSuccess(true);
+        onSurveySubmitted();
+      }, 500);
+      return;
+    }
+
     setIsSubmitting(true);
     setDbError('');
 
@@ -467,6 +600,24 @@ export default function StudentSurvey({
   return (
     <div className={`w-full mx-auto ${isMobileSim ? 'py-1 px-2' : 'py-8 px-4'}`} id="survey-root">
       
+      {/* Interactive Preview Notice Banner if in preview mode */}
+      {isPreview && (
+        <div className="mb-4 p-3 bg-gradient-to-r from-indigo-50 to-purple-50 rounded-2xl border border-indigo-200/80 flex items-center justify-between text-xs font-sans shadow-sm">
+          <div className="flex items-center space-x-2">
+            <span className="w-2.5 h-2.5 rounded-full bg-indigo-600 animate-pulse shrink-0"></span>
+            <span className="font-black text-indigo-900">
+              โหมดตัวอย่างแบบสอบถาม (Survey Preview)
+            </span>
+            <span className="text-neutral-500 hidden sm:inline">
+              — ข้อมูลจำลอง ไม่ถูกบันทึกจริง
+            </span>
+          </div>
+          <span className="font-mono text-[10px] font-bold text-indigo-700 bg-white px-2 py-0.5 rounded-md border border-indigo-150">
+            ขั้นตอน {step === 6 ? '5 (สรุป)' : step} / 5
+          </span>
+        </div>
+      )}
+
       {/* Upper header section - elegant and compact for mobile */}
       <div className={`text-center ${isMobileSim ? 'mb-4' : 'mb-8'}`}>
         <span className="inline-flex items-center space-x-1.5 px-3 py-1 rounded-full text-[10px] font-black bg-gradient-to-r from-violet-100 to-orange-100 text-[#4C2D81] border border-orange-200 mb-2.5 animate-pulse font-sans">
@@ -474,10 +625,10 @@ export default function StudentSurvey({
           <span>{t.qualityStandard}</span>
         </span>
         <h1 className={`font-sans font-black text-[#1E293B] tracking-tight leading-tight ${isMobileSim ? 'text-lg' : 'text-2xl sm:text-3xl'}`}>
-          {t.surveyTitle}
+          {surveyConfig ? (language === 'th' ? surveyConfig.titleTh : surveyConfig.titleEn) : t.surveyTitle}
         </h1>
-        <p className="text-[11px] text-neutral-500 font-sans tracking-wide mt-1 font-semibold">
-          {t.surveySubtitle}
+        <p className="text-[11px] text-neutral-500 font-sans tracking-wide mt-1 font-semibold max-w-2xl mx-auto">
+          {surveyConfig ? (language === 'th' ? surveyConfig.descriptionTh : surveyConfig.descriptionEn) : t.surveySubtitle}
         </p>
       </div>
 
@@ -1229,9 +1380,16 @@ export default function StudentSurvey({
                     </label>
                     <input
                       type="number"
-                      value={employedDetails.salary}
-                      onChange={(e) => setEmployedDetails({ ...employedDetails, salary: parseInt(e.target.value) || 0 })}
-                      className={`w-full px-4 py-2.5 bg-neutral-50 border ${formErrors.salary ? 'border-red-400' : 'border-neutral-200'} rounded-xl text-xs font-semibold text-neutral-800 focus:outline-none`}
+                      placeholder={language === 'th' ? "เช่น 20000" : "E.g. 20000"}
+                      value={employedDetails.salary > 0 ? employedDetails.salary : ''}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        setEmployedDetails({ 
+                          ...employedDetails, 
+                          salary: val === '' ? 0 : (parseInt(val, 10) || 0) 
+                        });
+                      }}
+                      className={`w-full px-4 py-2.5 bg-neutral-50 border ${formErrors.salary ? 'border-red-400' : 'border-neutral-200'} rounded-xl text-xs font-semibold text-neutral-800 focus:outline-none focus:bg-white focus:ring-2 focus:ring-[#4C2D81]`}
                     />
                     {formErrors.salary && <span className="text-[10px] text-red-500 font-sans">{formErrors.salary}</span>}
                   </div>
@@ -1413,9 +1571,16 @@ export default function StudentSurvey({
                         </label>
                         <input
                           type="number"
-                          value={employedDetails.otherIncomeAmount}
-                          onChange={(e) => setEmployedDetails({ ...employedDetails, otherIncomeAmount: parseInt(e.target.value) || 0 })}
-                          className="w-full px-3 py-1.5 border border-neutral-200 bg-neutral-50 rounded-xl text-xs"
+                          placeholder={language === 'th' ? "เช่น 5000" : "E.g. 5000"}
+                          value={employedDetails.otherIncomeAmount > 0 ? employedDetails.otherIncomeAmount : ''}
+                          onChange={(e) => {
+                            const val = e.target.value;
+                            setEmployedDetails({ 
+                              ...employedDetails, 
+                              otherIncomeAmount: val === '' ? 0 : (parseInt(val, 10) || 0) 
+                            });
+                          }}
+                          className="w-full px-3 py-1.5 border border-neutral-200 bg-neutral-50 rounded-xl text-xs focus:bg-white focus:ring-1 focus:ring-[#4C2D81]"
                         />
                       </div>
                     </div>
@@ -1492,7 +1657,7 @@ export default function StudentSurvey({
                     </div>
 
                     <div className="space-y-5">
-                      {ENTREPRENEUR_QUESTIONS.map((q) => {
+                      {activeEntrepreneurQuestions.map((q) => {
                         const currentVal = employedDetails.entrepreneurRatings?.[String(q.id)] || 0;
                         const errorMsg = formErrors[`entrepreneur_${q.id}`];
 
@@ -1902,7 +2067,7 @@ export default function StudentSurvey({
                       {language === 'th' ? 'ผลประเมินตนเองในฐานะผู้ประกอบการ (1-10)' : 'Self-evaluation as entrepreneur (1-10)'}
                     </span>
                     <div className="space-y-1.5 max-h-60 overflow-y-auto pr-1">
-                      {ENTREPRENEUR_QUESTIONS.map(q => {
+                      {activeEntrepreneurQuestions.map(q => {
                         const score = employedDetails.entrepreneurRatings?.[String(q.id)] || 0;
                         return (
                           <div key={q.id} className="flex items-start justify-between text-[11px] py-1 border-b border-indigo-100/40 last:border-0 gap-3">

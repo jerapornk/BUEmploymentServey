@@ -19,6 +19,29 @@ export interface CustomQuestion {
   required?: boolean;
 }
 
+export interface EntrepreneurQuestion {
+  id: number;
+  th: string;
+  en: string;
+  category?: string;
+}
+
+export interface SurveyConfig {
+  titleTh: string;
+  titleEn: string;
+  descriptionTh: string;
+  descriptionEn: string;
+  bannerNoticeTh: string;
+  bannerNoticeEn: string;
+  targetAcademicYear: string;
+  contactEmail: string;
+  contactPhone: string;
+  contactOffice: string;
+  entrepreneurQuestions: EntrepreneurQuestion[];
+  allowEditProfile: boolean;
+  updatedAt?: any;
+}
+
 export interface EmployedDetails {
   workType: string;
   workTypeOther?: string;

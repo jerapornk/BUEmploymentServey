@@ -98,6 +98,12 @@ service cloud.firestore {
       allow delete: if isAdmin();
     }
 
+    // Rules for Survey Settings Collection
+    match /survey_settings/{settingId} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
     // Rules for Connection Verification Test
     match /test/{documentId} {
       allow read, write: if true;

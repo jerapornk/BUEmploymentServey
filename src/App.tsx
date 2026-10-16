@@ -17,7 +17,8 @@ import {
   onSnapshot
 } from 'firebase/firestore';
 import { db, auth } from './firebase';
-import { CustomQuestion, SurveyResponse } from './types';
+import { CustomQuestion, SurveyResponse, SurveyConfig } from './types';
+import { DEFAULT_SURVEY_CONFIG } from './data';
 import Navbar from './components/Navbar';
 import HeroSection from './components/HeroSection';
 import StudentSurvey from './components/StudentSurvey';
@@ -40,6 +41,15 @@ export default function App() {
   const [customQuestions, setCustomQuestions] = useState<CustomQuestion[]>([]);
   const [isMobileSim, setIsMobileSim] = useState(false);
   const [language, setLanguage] = useState<'th' | 'en'>('th');
+  const [surveyConfig, setSurveyConfig] = useState<SurveyConfig>(() => {
+    try {
+      const cached = localStorage.getItem('bu_survey_config');
+      if (cached) {
+        return JSON.parse(cached);
+      }
+    } catch (e) {}
+    return DEFAULT_SURVEY_CONFIG;
+  });
 
   // 1. Connection Validation to Firestore on Boot (Strict directive from skill)
   useEffect(() => {
@@ -61,13 +71,17 @@ export default function App() {
     testConnection();
   }, []);
 
-  // 2. Real-time synchronization of survey responses count & custom questions
+  // 2. Real-time synchronization of survey responses count, custom questions & survey config
   useEffect(() => {
-    // Real-time listener for Survey Responses count
+    // Real-time listener for Survey Responses count (excluding 2565 and 2566)
     const unsubscribeResponses = onSnapshot(
       collection(db, 'survey_responses'),
       (snapshot) => {
-        setSurveyCount(snapshot.size);
+        const validDocs = snapshot.docs.filter(d => {
+          const yr = String(d.data().academicYear || '').trim();
+          return yr !== '2565' && yr !== '2566';
+        });
+        setSurveyCount(validDocs.length);
       },
       (countErr) => {
         console.warn('survey_responses real-time sync notice:', countErr);
@@ -99,9 +113,27 @@ export default function App() {
       }
     );
 
+    // Real-time listener for survey config/settings
+    const unsubscribeConfig = onSnapshot(
+      doc(db, 'survey_settings', 'current_config'),
+      (docSnap) => {
+        if (docSnap.exists()) {
+          const data = docSnap.data() as SurveyConfig;
+          if (data && data.titleTh) {
+            setSurveyConfig(data);
+            localStorage.setItem('bu_survey_config', JSON.stringify(data));
+          }
+        }
+      },
+      (err) => {
+        console.warn('survey_settings sync notice:', err);
+      }
+    );
+
     return () => {
       unsubscribeResponses();
       unsubscribeQuestions();
+      unsubscribeConfig();
     };
   }, []);
 
@@ -232,6 +264,7 @@ export default function App() {
             isMobileSim={isMobileSim}
             language={language}
             onLanguageChange={setLanguage}
+            surveyConfig={surveyConfig}
           />
         )}
       </div>
@@ -331,6 +364,8 @@ export default function App() {
               <AdminDashboard 
                 customQuestions={customQuestions} 
                 onQuestionsUpdated={fetchAppMetadata} 
+                surveyConfig={surveyConfig}
+                onSurveyConfigUpdated={setSurveyConfig}
               />
             ) : (
               /* High privacy warning message if a standard user tries to click Admin */

@@ -9,7 +9,8 @@ import {
   doc, 
   onSnapshot,
   where,
-  setDoc
+  setDoc,
+  writeBatch
 } from 'firebase/firestore';
 import { db, auth, handleFirestoreError, OperationType } from '../firebase';
 import { 
@@ -27,9 +28,12 @@ import {
   DEGREE_LEVELS,
   ACADEMIC_YEARS
 } from '../data';
-import { Graduate, SurveyResponse, CustomQuestion } from '../types';
+import { Graduate, SurveyResponse, CustomQuestion, SurveyConfig } from '../types';
 import { ENTREPRENEUR_QUESTIONS } from './StudentSurvey';
 import FacultyEmploymentRateChart from './FacultyEmploymentRateChart';
+import ImportDataModal from './ImportDataModal';
+import SurveyPreviewEditor from './SurveyPreviewEditor';
+import { DEFAULT_SURVEY_CONFIG } from '../data';
 import { 
   PieChart, 
   Pie, 
@@ -46,6 +50,7 @@ import {
   LabelList
 } from 'recharts';
 import { 
+  Eye,
   Plus, 
   Trash2, 
   Edit3, 
@@ -98,7 +103,8 @@ import {
   List,
   Copy,
   Tag,
-  CornerDownRight
+  CornerDownRight,
+  ChevronUp
 } from 'lucide-react';
 
 const FEEDBACK_TAGS = [
@@ -115,11 +121,18 @@ const FEEDBACK_TAGS = [
 interface AdminDashboardProps {
   customQuestions: CustomQuestion[];
   onQuestionsUpdated: () => void;
+  surveyConfig?: SurveyConfig;
+  onSurveyConfigUpdated?: (newConfig: SurveyConfig) => void;
 }
 
-export default function AdminDashboard({ customQuestions, onQuestionsUpdated }: AdminDashboardProps) {
+export default function AdminDashboard({ 
+  customQuestions, 
+  onQuestionsUpdated,
+  surveyConfig,
+  onSurveyConfigUpdated
+}: AdminDashboardProps) {
   // Navigation Tabs inside Dashboard
-  const [activeTab, setActiveTab] = useState<'analytics' | 'graduates' | 'responses' | 'custom_questions' | 'admins'>('analytics');
+  const [activeTab, setActiveTab] = useState<'analytics' | 'graduates' | 'responses' | 'survey_preview' | 'custom_questions' | 'admins'>('analytics');
   
   // Analytics Sub-Tabs State
   const [analyticsSubTab, setAnalyticsSubTab] = useState<'overview' | 'faculties' | 'timeline' | 'feedback'>('overview');
@@ -161,6 +174,12 @@ export default function AdminDashboard({ customQuestions, onQuestionsUpdated }: 
   const itemsPerPage = 50;
 
   useEffect(() => {
+    if (filterAcademicYear === '2565' || filterAcademicYear === '2566') {
+      setFilterAcademicYear('all');
+    }
+  }, [filterAcademicYear]);
+
+  useEffect(() => {
     setGraduatesPage(1);
     setResponsesPage(1);
   }, [filterAcademicYear, filterResponseStatus, filterFaculty, filterDegreeLevel, searchQuery]);
@@ -200,7 +219,17 @@ export default function AdminDashboard({ customQuestions, onQuestionsUpdated }: 
   const [isUploadingCSV, setIsUploadingCSV] = useState(false);
   const [csvResult, setCsvResult] = useState('');
 
+  // Dedicated Import by Academic Year Modal State
+  const [showImportModal, setShowImportModal] = useState<boolean>(false);
+  const [importTargetType, setImportTargetType] = useState<'graduates' | 'responses'>('graduates');
+
+  // Graduates Roster View & Academic Year Grouping States
+  const [rosterViewMode, setRosterViewMode] = useState<'list' | 'grouped'>('grouped');
+  const [expandedCohorts, setExpandedCohorts] = useState<Record<string, boolean>>({});
+  const [cohortPageMap, setCohortPageMap] = useState<Record<string, number>>({});
+
   // Bulk Delete States
+  const [showBulkDeleteSection, setShowBulkDeleteSection] = useState<boolean>(false);
   const [deleteYearSelected, setDeleteYearSelected] = useState<string>('');
   const [deleteGradsOption, setDeleteGradsOption] = useState<boolean>(true);
   const [deleteResOption, setDeleteResOption] = useState<boolean>(true);
@@ -456,19 +485,18 @@ export default function AdminDashboard({ customQuestions, onQuestionsUpdated }: 
     // Set up Real-time listener for Survey Responses
     const responsesUnsubscribe = onSnapshot(collection(db, 'survey_responses'), async (snapshot) => {
       const fetchedResponses: SurveyResponse[] = [];
-      const staleResponseIds: string[] = [];
-
       snapshot.docs.forEach(docSnap => {
         const data = docSnap.data();
-        if (data.academicYear === '2569') {
-          staleResponseIds.push(docSnap.id);
-          return;
-        }
         const rawFaculty = data.faculty || '';
         const faculty = normalizeFacultyName(rawFaculty, data.major, data.studentId);
         const status = normalizeWorkStatus(data as any);
         const degreeLevel = normalizeDegreeLevel(data.degreeLevel);
         const academicYear = String(data.academicYear || '2568').trim();
+        // Remove academic years 2565 and 2566 completely
+        if (academicYear === '2565' || academicYear === '2566') {
+          deleteDoc(docSnap.ref).catch(() => {});
+          return;
+        }
         fetchedResponses.push({
           id: docSnap.id,
           ...data,
@@ -478,17 +506,6 @@ export default function AdminDashboard({ customQuestions, onQuestionsUpdated }: 
           academicYear
         } as SurveyResponse);
       });
-
-      // Auto-purge any stale 2569 responses from Firestore
-      if (staleResponseIds.length > 0) {
-        for (const id of staleResponseIds) {
-          try {
-            await deleteDoc(doc(db, 'survey_responses', id));
-          } catch (e) {
-            console.warn('Auto purge 2569 response', e);
-          }
-        }
-      }
 
       setResponses(fetchedResponses);
     }, (err) => {
@@ -501,20 +518,20 @@ export default function AdminDashboard({ customQuestions, onQuestionsUpdated }: 
     });
 
     // Set up Real-time listener for Graduates List
-    const graduatesUnsubscribe = onSnapshot(collection(db, 'graduates'), async (snapshot) => {
+    const graduatesUnsubscribe = onSnapshot(collection(db, 'graduates'), (snapshot) => {
       const fetchedGrads: Graduate[] = [];
-      const staleGradIds: string[] = [];
 
       snapshot.docs.forEach(docSnap => {
         const data = docSnap.data();
-        if (data.academicYear === '2569') {
-          staleGradIds.push(docSnap.id);
-          return;
-        }
         const rawFaculty = data.faculty || '';
         const faculty = normalizeFacultyName(rawFaculty, data.major, data.studentId);
         const degreeLevel = normalizeDegreeLevel(data.degreeLevel);
         const academicYear = String(data.academicYear || '2568').trim();
+        // Remove academic years 2565 and 2566 completely
+        if (academicYear === '2565' || academicYear === '2566') {
+          deleteDoc(docSnap.ref).catch(() => {});
+          return;
+        }
         fetchedGrads.push({
           id: docSnap.id,
           ...data,
@@ -523,17 +540,6 @@ export default function AdminDashboard({ customQuestions, onQuestionsUpdated }: 
           academicYear
         } as Graduate);
       });
-
-      // Auto-purge any stale 2569 graduates from Firestore
-      if (staleGradIds.length > 0) {
-        for (const id of staleGradIds) {
-          try {
-            await deleteDoc(doc(db, 'graduates', id));
-          } catch (e) {
-            console.warn('Auto purge 2569 graduate', e);
-          }
-        }
-      }
 
       setGraduesWithMockFallback(fetchedGrads);
       setIsLoading(false);
@@ -1192,6 +1198,57 @@ export default function AdminDashboard({ customQuestions, onQuestionsUpdated }: 
     document.body.removeChild(link);
   };
 
+  // Export graduates roster to CSV (optionally for a specific academic year)
+  const handleExportGraduatesCSV = (targetYear?: string) => {
+    const yearToUse = targetYear !== undefined ? targetYear : filterAcademicYear;
+    const gradsToExport = graduates.filter(g => {
+      const matchYear = !yearToUse || yearToUse === 'all' || String(g.academicYear).trim() === String(yearToUse).trim();
+      const matchFaculty = filterFaculty === 'all' || g.faculty === filterFaculty;
+      const matchDegree = filterDegreeLevel === 'all' || normalizeDegreeLevel(g.degreeLevel) === filterDegreeLevel;
+      const hasResponded = responses.some(r => r.studentId === g.studentId);
+      const matchStatus = filterResponseStatus === 'all' || (filterResponseStatus === 'responded' ? hasResponded : !hasResponded);
+      
+      const query = searchQuery.trim().toLowerCase();
+      const matchSearch = !query || 
+        g.studentId.includes(query) || 
+        (g.fullName || '').toLowerCase().includes(query) ||
+        (g.faculty || '').toLowerCase().includes(query) || 
+        (g.major || '').toLowerCase().includes(query);
+
+      return matchYear && matchFaculty && matchDegree && matchStatus && matchSearch;
+    });
+
+    if (gradsToExport.length === 0) {
+      alert('ไม่มีข้อมูลรายชื่อทำเนียบบัณฑิตตามเงื่อนไขที่เลือก');
+      return;
+    }
+
+    let csvContent = '\uFEFF';
+    csvContent += 'ปีการศึกษา,ระดับปริญญา,รหัสนักศึกษา,ชื่อ,นามสกุล,คณะ,สาขาวิชา,สถานะการตอบแบบสำรวจ,วันที่ตอบกลับ\n';
+
+    gradsToExport.forEach(g => {
+      const nameParts = (g.fullName || '').trim().split(/\s+/);
+      const firstName = g.firstName || nameParts[0] || '-';
+      const lastName = g.lastName || nameParts.slice(1).join(' ') || '-';
+      const deg = g.degreeLevel || 'ระดับปริญญาตรี';
+      const res = responses.find(r => r.studentId === g.studentId);
+      const statusLabel = res ? 'ตอบกลับแล้ว' : 'ยังไม่ตอบ';
+      const resDate = res ? formatResponseDate(res.createdAt) : '-';
+
+      csvContent += `"${g.academicYear || ''}","${deg}","${g.studentId || ''}","${firstName}","${lastName}","${g.faculty || ''}","${g.major || ''}","${statusLabel}","${resDate}"\n`;
+    });
+
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    const yearSuffix = yearToUse && yearToUse !== 'all' ? `_academic_${yearToUse}` : '_all_years';
+    link.setAttribute('download', `graduates_roster${yearSuffix}_count_${gradsToExport.length}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
   // Data Filtering computations
   const filteredResponses = responses.filter(r => {
     const matchYear = filterAcademicYear === 'all' || String(r.academicYear).trim() === filterAcademicYear;
@@ -1625,14 +1682,74 @@ export default function AdminDashboard({ customQuestions, onQuestionsUpdated }: 
     );
   };
 
-  // Get all unique valid academic years present in either roster list or survey replies
-  const uniqueYearsForBulkDelete = Array.from(
-    new Set([
-      ...graduates.map(g => g.academicYear || ''),
-      ...responses.map(r => r.academicYear || ''),
-      ...ACADEMIC_YEARS
-    ])
-  ).filter(y => y && /^\d{4}$/.test(y.trim()) && y !== '2569').sort((a, b) => b.localeCompare(a)); // Sort in descending order (e.g. 2568 first)
+  // Get all unique valid academic years dynamically present in either roster list, survey replies, or defaults (excluding 2565 and 2566)
+  const allAvailableAcademicYears = useMemo(() => {
+    return Array.from(
+      new Set([
+        ...ACADEMIC_YEARS,
+        ...graduates.map(g => g.academicYear || ''),
+        ...responses.map(r => r.academicYear || '')
+      ])
+    )
+      .filter(y => y && /^\d{4}$/.test(y.trim()) && y !== '2565' && y !== '2566')
+      .sort((a, b) => b.localeCompare(a)); // Sort in descending order (e.g. 2569, 2568, 2567)
+  }, [graduates, responses]);
+
+  const uniqueYearsForBulkDelete = allAvailableAcademicYears;
+
+  // Statistics and cohort lists grouped by Academic Year for the graduates roster
+  const graduateCohortsStats = useMemo(() => {
+    return allAvailableAcademicYears.map(yr => {
+      const allInYear = graduates.filter(g => String(g.academicYear).trim() === yr);
+      const total = allInYear.length;
+      
+      const gradStudentIds = new Set(allInYear.map(g => g.studentId));
+      const respondedCount = responses.filter(r => gradStudentIds.has(r.studentId) && String(r.academicYear).trim() === yr).length;
+      const pendingCount = Math.max(0, total - respondedCount);
+      const responseRate = total > 0 ? Number(((respondedCount / total) * 100).toFixed(1)) : 0;
+
+      const bachelors = allInYear.filter(g => normalizeDegreeLevel(g.degreeLevel) === 'ระดับปริญญาตรี').length;
+      const masters = allInYear.filter(g => normalizeDegreeLevel(g.degreeLevel) === 'ระดับปริญญาโท').length;
+      const doctors = allInYear.filter(g => normalizeDegreeLevel(g.degreeLevel) === 'ระดับปริญญาเอก').length;
+      const facultiesCount = new Set(allInYear.map(g => g.faculty)).size;
+
+      // Filtered within this cohort based on active filters & search
+      const query = searchQuery.trim().toLowerCase();
+      const filtered = allInYear.filter(g => {
+        const matchFaculty = filterFaculty === 'all' || g.faculty === filterFaculty;
+        const matchDegree = filterDegreeLevel === 'all' || normalizeDegreeLevel(g.degreeLevel) === filterDegreeLevel;
+        const hasResponded = responses.some(r => r.studentId === g.studentId);
+        const matchStatus = filterResponseStatus === 'all' || (filterResponseStatus === 'responded' ? hasResponded : !hasResponded);
+        const matchSearch = !query || 
+          g.studentId.includes(query) || 
+          (g.fullName || '').toLowerCase().includes(query) ||
+          (g.faculty || '').toLowerCase().includes(query) || 
+          (g.major || '').toLowerCase().includes(query);
+        return matchFaculty && matchDegree && matchStatus && matchSearch;
+      });
+
+      return {
+        year: yr,
+        total,
+        respondedCount,
+        pendingCount,
+        responseRate,
+        bachelors,
+        masters,
+        doctors,
+        facultiesCount,
+        allGraduates: allInYear,
+        filteredGraduates: filtered
+      };
+    });
+  }, [allAvailableAcademicYears, graduates, responses, filterFaculty, filterDegreeLevel, filterResponseStatus, searchQuery]);
+
+  const toggleCohortExpanded = (year: string) => {
+    setExpandedCohorts(prev => ({
+      ...prev,
+      [year]: prev[year] === undefined ? true : !prev[year]
+    }));
+  };
 
   return (
     <div className="max-w-7xl mx-auto py-6 px-4" id="admin-dashboard">
@@ -1669,7 +1786,7 @@ export default function AdminDashboard({ customQuestions, onQuestionsUpdated }: 
                 className="px-2.5 py-1 bg-white border border-neutral-200 rounded-xl text-xs font-bold text-neutral-700 focus:outline-none focus:ring-1 focus:ring-indigo-500"
               >
                 <option value="all">ปีการศึกษาทั้งหมด</option>
-                {ACADEMIC_YEARS.map(yr => (
+                {allAvailableAcademicYears.map(yr => (
                   <option key={yr} value={yr}>ปีการศึกษา {yr}</option>
                 ))}
               </select>
@@ -1778,6 +1895,25 @@ export default function AdminDashboard({ customQuestions, onQuestionsUpdated }: 
                 activeTab === 'graduates' ? 'bg-indigo-500 text-white' : 'bg-neutral-100 text-neutral-600'
               }`}>
                 {filteredGraduates.length}
+              </span>
+            </button>
+
+            <button
+              onClick={() => setActiveTab('survey_preview')}
+              className={`w-full flex items-center justify-between px-4 py-3 rounded-2xl font-sans font-bold text-xs transition-all duration-200 ${
+                activeTab === 'survey_preview' 
+                  ? 'bg-indigo-600 text-white shadow-md shadow-indigo-100' 
+                  : 'bg-white text-neutral-600 hover:bg-neutral-50 hover:text-neutral-900 border border-neutral-200/60'
+              }`}
+            >
+              <div className="flex items-center space-x-2.5">
+                <Eye className="w-4 h-4" />
+                <span>ตัวอย่าง & ปรับแต่งแบบสอบถาม</span>
+              </div>
+              <span className={`px-2 py-0.5 rounded-full font-mono text-[10px] font-extrabold ${
+                activeTab === 'survey_preview' ? 'bg-indigo-500 text-white' : 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+              }`}>
+                Live
               </span>
             </button>
 
@@ -2735,26 +2871,35 @@ export default function AdminDashboard({ customQuestions, onQuestionsUpdated }: 
             {activeTab === 'graduates' && (
               <div className="bg-white rounded-3xl p-6 border border-neutral-105 shadow-sm space-y-6">
                 
-                <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
-                  <div className="relative flex-1">
-                    <Search className="absolute left-3 top-2.5 w-4 h-4 text-neutral-400" />
-                    <input
-                      type="text"
-                      placeholder="ค้นหาตามรหัสนักศึกษา, ชื่อ, คณะ, สาขา..."
-                      value={searchQuery}
-                      onChange={(e) => setSearchQuery(e.target.value)}
-                      className="w-full pl-9 pr-4 py-2 border border-neutral-200 rounded-xl text-xs bg-neutral-50/50"
-                    />
+                {/* 1. Header & Action Controls */}
+                <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 pb-4 border-b border-neutral-100">
+                  <div>
+                    <h3 className="text-base font-bold text-neutral-800 flex items-center space-x-2">
+                      <GraduationCap className="w-5 h-5 text-indigo-600" />
+                      <span>ทำเนียบรายชื่อผู้สำเร็จการศึกษา (Graduates Directory)</span>
+                    </h3>
+                    <p className="text-xs text-neutral-500 mt-0.5">
+                      จัดการฐานข้อมูลรายชื่อบัณฑิต แบ่งแยกตามปีการศึกษา ตรวจสอบการตอบแบบสำรวจ และนำเข้า/ส่งออกข้อมูล
+                    </p>
                   </div>
 
-                  <div className="flex items-center space-x-2">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <button
+                      onClick={() => handleExportGraduatesCSV()}
+                      className="flex items-center space-x-1.5 px-3.5 py-2 border border-neutral-200 bg-white hover:bg-neutral-50 text-neutral-700 rounded-xl text-xs font-semibold shadow-2xs transition-all cursor-pointer"
+                      title="ส่งออกทำเนียบรายชื่อตามเงื่อนไขที่เลือก (CSV)"
+                    >
+                      <Download className="w-3.5 h-3.5 text-neutral-600" />
+                      <span>ส่งออก CSV ทำเนียบ</span>
+                    </button>
+
                     <button
                       onClick={downloadSampleCSV}
-                      className="flex items-center space-x-1 px-3.5 py-2 border border-emerald-200 bg-emerald-50/60 hover:bg-emerald-100/70 text-emerald-800 rounded-xl text-xs font-semibold shadow-2xs transition-all cursor-pointer"
+                      className="flex items-center space-x-1 px-3 py-2 border border-emerald-200 bg-emerald-50/60 hover:bg-emerald-100/70 text-emerald-800 rounded-xl text-xs font-semibold shadow-2xs transition-all cursor-pointer"
                       title="ดาวน์โหลดโครงสร้างไฟล์ CSV ตัวอย่าง (7 คอลัมน์)"
                     >
                       <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-600" />
-                      <span>ไฟล์ CSV ตัวอย่าง</span>
+                      <span>ตัวอย่าง CSV</span>
                     </button>
 
                     <button
@@ -2763,108 +2908,340 @@ export default function AdminDashboard({ customQuestions, onQuestionsUpdated }: 
                         setGradForm({
                           studentId: '',
                           fullName: '',
+                          degreeLevel: 'ระดับปริญญาตรี',
                           faculty: FACULTIES[0],
                           major: MAJORS[FACULTIES[0]][0],
-                          academicYear: '2568'
+                          academicYear: filterAcademicYear !== 'all' ? filterAcademicYear : '2568'
                         });
                         setShowGradModal(true);
                       }}
                       className="flex items-center space-x-1 px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-semibold shadow-sm cursor-pointer"
                     >
                       <UserPlus className="w-3.5 h-3.5" />
-                      <span>เพิ่มรายชื่อรายบุคคล</span>
+                      <span>เพิ่มรายชื่อ</span>
                     </button>
 
                     <button
-                      onClick={() => fileInputRef.current?.click()}
-                      className="flex items-center space-x-1 px-4 py-2 border border-neutral-200 hover:bg-neutral-50 text-neutral-600 rounded-xl text-xs font-semibold cursor-pointer"
+                      onClick={() => {
+                        setImportTargetType('graduates');
+                        setShowImportModal(true);
+                      }}
+                      className="flex items-center space-x-1.5 px-4 py-2 bg-gradient-to-r from-indigo-600 to-violet-600 hover:from-indigo-700 hover:to-violet-700 text-white rounded-xl text-xs font-bold shadow-sm transition-all cursor-pointer"
+                      title="นำเข้าข้อมูลรายชื่อบัณฑิตโดยเลือกปีการศึกษา"
                     >
                       <Upload className="w-3.5 h-3.5" />
-                      <span>นำเข้า CSV</span>
+                      <span>นำเข้าตามปีการศึกษา</span>
                     </button>
-                    <input
-                      type="file"
-                      ref={fileInputRef}
-                      onChange={handleCSVUpload}
-                      accept=".csv"
-                      className="hidden"
-                    />
+
+                    <button
+                      onClick={() => setShowBulkDeleteSection(!showBulkDeleteSection)}
+                      className={`flex items-center space-x-1 px-3 py-2 border rounded-xl text-xs font-semibold transition-all cursor-pointer ${
+                        showBulkDeleteSection
+                          ? 'bg-red-50 text-red-700 border-red-200'
+                          : 'bg-white hover:bg-neutral-50 text-neutral-500 border-neutral-200'
+                      }`}
+                      title="เครื่องมือล้างข้อมูลรายปีการศึกษา"
+                    >
+                      <Trash2 className="w-3.5 h-3.5 text-red-500" />
+                      <span className="hidden sm:inline">ล้างข้อมูลรายปี</span>
+                    </button>
                   </div>
                 </div>
 
-                {/* BULK DELETE BY ACADEMIC YEAR SECTION */}
-                <div className="bg-red-50/70 border border-red-100 rounded-2xl p-5 space-y-4 font-sans relative overflow-hidden">
-                  <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
-                    <div className="space-y-1">
-                      <h4 className="text-xs font-black text-red-950 uppercase tracking-widest flex items-center space-x-1.5">
-                        <Trash2 className="w-4 h-4 text-red-600" />
-                        <span>ระบบล้างข้อมูลทั้งหมดรายปีการศึกษา (Bulk Delete)</span>
-                      </h4>
-                      <p className="text-[11px] text-red-700/80 font-medium">
-                        ลบข้อมูลแบบสำรวจหรือทำเนียบรายชื่อของบัณฑิตทั้งหมดตามปีการศึกษาที่ท่านประสงค์จะจัดสรรพื้นที่หรือล้างเพื่อนำเข้าข้อมูลใหม่
-                      </p>
-                    </div>
-                  </div>
-
-                  <div className="grid grid-cols-1 sm:grid-cols-4 gap-4 items-end bg-white/60 p-4 rounded-xl border border-red-100/50">
-                    <div className="space-y-1">
-                      <label className="block text-[10px] font-bold text-red-900 uppercase">1. ปีการศึกษาเป้าหมาย</label>
-                      <select
-                        value={deleteYearSelected}
-                        onChange={(e) => setDeleteYearSelected(e.target.value)}
-                        className="w-full px-3 py-1.5 bg-white border border-red-200 text-neutral-800 rounded-lg text-xs font-semibold focus:outline-none focus:ring-1 focus:ring-red-400"
-                      >
-                        <option value="">-- เลือกปีการศึกษา --</option>
-                        {uniqueYearsForBulkDelete.map(year => (
-                          <option key={year} value={year}>ปีการศึกษา {year}</option>
-                        ))}
-                      </select>
-                    </div>
-
-                    <div className="space-y-2">
-                      <label className="block text-[10px] font-bold text-red-900 uppercase">2. ข้อมูลที่ต้องการลบ</label>
-                      <div className="flex flex-col space-y-1.5">
-                        <label className="flex items-center space-x-2 text-xs font-bold text-neutral-700 cursor-pointer select-none">
-                          <input
-                            type="checkbox"
-                            checked={deleteGradsOption}
-                            onChange={(e) => setDeleteGradsOption(e.target.checked)}
-                            className="rounded border-red-300 text-red-600 focus:ring-red-500 w-3.5 h-3.5 accent-red-600"
-                          />
-                          <span>ลบทำเนียบรายชื่อบัณฑิต (Graduates)</span>
-                        </label>
-                        <label className="flex items-center space-x-2 text-xs font-bold text-neutral-700 cursor-pointer select-none">
-                          <input
-                            type="checkbox"
-                            checked={deleteResOption}
-                            onChange={(e) => setDeleteResOption(e.target.checked)}
-                            className="rounded border-red-300 text-red-600 focus:ring-red-500 w-3.5 h-3.5 accent-red-600"
-                          />
-                          <span>ลบผลการตอบแบบสำรวจ (Survey Responses)</span>
-                        </label>
+                {/* 2. BULK DELETE BY ACADEMIC YEAR SECTION (Collapsible) */}
+                {showBulkDeleteSection && (
+                  <div className="bg-red-50/70 border border-red-100 rounded-2xl p-5 space-y-4 font-sans relative overflow-hidden animate-fadeIn">
+                    <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+                      <div className="space-y-1">
+                        <h4 className="text-xs font-black text-red-950 uppercase tracking-widest flex items-center space-x-1.5">
+                          <Trash2 className="w-4 h-4 text-red-600" />
+                          <span>ระบบล้างข้อมูลทั้งหมดรายปีการศึกษา (Bulk Delete)</span>
+                        </h4>
+                        <p className="text-[11px] text-red-700/80 font-medium">
+                          ลบข้อมูลแบบสำรวจหรือทำเนียบรายชื่อของบัณฑิตทั้งหมดตามปีการศึกษาที่ท่านประสงค์จะจัดสรรพื้นที่หรือล้างเพื่อนำเข้าข้อมูลใหม่
+                        </p>
                       </div>
                     </div>
 
-                    <div className="sm:col-span-2 flex justify-end">
-                      <button
-                        type="button"
-                        onClick={handleBulkDeleteByYear}
-                        disabled={isDeletingBulk || !deleteYearSelected || (!deleteGradsOption && !deleteResOption)}
-                        className="w-full sm:w-auto px-5 py-2.5 bg-red-600 hover:bg-red-700 disabled:bg-red-300 text-white rounded-xl text-xs font-bold shadow-sm transition-all flex items-center justify-center space-x-2"
-                      >
-                        {isDeletingBulk ? (
-                          <>
-                            <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                            <span>กำลังเคลียร์ข้อมูล...</span>
-                          </>
-                        ) : (
-                          <>
-                            <Trash2 className="w-3.5 h-3.5" />
-                            <span>ยืนยันคำสั่งลบข้อมูลทั้งหมด</span>
-                          </>
-                        )}
-                      </button>
+                    <div className="grid grid-cols-1 sm:grid-cols-4 gap-4 items-end bg-white/60 p-4 rounded-xl border border-red-100/50">
+                      <div className="space-y-1">
+                        <label className="block text-[10px] font-bold text-red-900 uppercase">1. ปีการศึกษาเป้าหมาย</label>
+                        <select
+                          value={deleteYearSelected}
+                          onChange={(e) => setDeleteYearSelected(e.target.value)}
+                          className="w-full px-3 py-1.5 bg-white border border-red-200 text-neutral-800 rounded-lg text-xs font-semibold focus:outline-none focus:ring-1 focus:ring-red-400"
+                        >
+                          <option value="">-- เลือกปีการศึกษา --</option>
+                          {uniqueYearsForBulkDelete.map(year => (
+                            <option key={year} value={year}>ปีการศึกษา {year}</option>
+                          ))}
+                        </select>
+                      </div>
+
+                      <div className="space-y-2">
+                        <label className="block text-[10px] font-bold text-red-900 uppercase">2. ข้อมูลที่ต้องการลบ</label>
+                        <div className="flex flex-col space-y-1.5">
+                          <label className="flex items-center space-x-2 text-xs font-bold text-neutral-700 cursor-pointer select-none">
+                            <input
+                              type="checkbox"
+                              checked={deleteGradsOption}
+                              onChange={(e) => setDeleteGradsOption(e.target.checked)}
+                              className="rounded border-red-300 text-red-600 focus:ring-red-500 w-3.5 h-3.5 accent-red-600"
+                            />
+                            <span>ลบทำเนียบรายชื่อบัณฑิต (Graduates)</span>
+                          </label>
+                          <label className="flex items-center space-x-2 text-xs font-bold text-neutral-700 cursor-pointer select-none">
+                            <input
+                              type="checkbox"
+                              checked={deleteResOption}
+                              onChange={(e) => setDeleteResOption(e.target.checked)}
+                              className="rounded border-red-300 text-red-600 focus:ring-red-500 w-3.5 h-3.5 accent-red-600"
+                            />
+                            <span>ลบผลการตอบแบบสำรวจ (Survey Responses)</span>
+                          </label>
+                        </div>
+                      </div>
+
+                      <div className="sm:col-span-2 flex justify-end">
+                        <button
+                          type="button"
+                          onClick={handleBulkDeleteByYear}
+                          disabled={isDeletingBulk || !deleteYearSelected || (!deleteGradsOption && !deleteResOption)}
+                          className="w-full sm:w-auto px-5 py-2.5 bg-red-600 hover:bg-red-700 disabled:bg-red-300 text-white rounded-xl text-xs font-bold shadow-sm transition-all flex items-center justify-center space-x-2 cursor-pointer"
+                        >
+                          {isDeletingBulk ? (
+                            <>
+                              <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                              <span>กำลังเคลียร์ข้อมูล...</span>
+                            </>
+                          ) : (
+                            <>
+                              <Trash2 className="w-3.5 h-3.5" />
+                              <span>ยืนยันคำสั่งลบข้อมูลทั้งหมด</span>
+                            </>
+                          )}
+                        </button>
+                      </div>
                     </div>
+                  </div>
+                )}
+
+                {/* 3. ACADEMIC YEAR COHORT TAB BAR & VIEW MODE SWITCHER */}
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-neutral-50/90 p-3 rounded-2xl border border-neutral-200/70">
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <span className="text-[11px] font-bold text-neutral-500 uppercase flex items-center space-x-1 mr-1 pl-1">
+                      <Calendar className="w-3.5 h-3.5 text-indigo-600" />
+                      <span>ปีการศึกษา:</span>
+                    </span>
+
+                    <button
+                      onClick={() => setFilterAcademicYear('all')}
+                      className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all flex items-center space-x-1.5 cursor-pointer ${
+                        filterAcademicYear === 'all'
+                          ? 'bg-indigo-600 text-white shadow-xs'
+                          : 'bg-white hover:bg-neutral-200/60 text-neutral-700 border border-neutral-200/60'
+                      }`}
+                    >
+                      <span>ทุกปีการศึกษา</span>
+                      <span className={`px-1.5 py-0.2 rounded-md text-[10px] font-mono ${
+                        filterAcademicYear === 'all' ? 'bg-indigo-700/90 text-white' : 'bg-neutral-100 text-neutral-600'
+                      }`}>
+                        {graduates.length.toLocaleString()}
+                      </span>
+                    </button>
+
+                    {allAvailableAcademicYears.map(yr => {
+                      const yrGrads = graduates.filter(g => String(g.academicYear).trim() === yr);
+                      const yrResponses = responses.filter(r => String(r.academicYear).trim() === yr);
+                      const isSelected = filterAcademicYear === yr;
+                      const respRate = yrGrads.length > 0 ? ((yrResponses.length / yrGrads.length) * 100).toFixed(0) : '0';
+
+                      return (
+                        <button
+                          key={yr}
+                          onClick={() => setFilterAcademicYear(yr)}
+                          className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all flex items-center space-x-1.5 cursor-pointer ${
+                            isSelected
+                              ? 'bg-indigo-600 text-white shadow-xs'
+                              : 'bg-white hover:bg-neutral-200/60 text-neutral-700 border border-neutral-200/60'
+                          }`}
+                        >
+                          <span>ปีการศึกษา {yr}</span>
+                          <span className={`px-1.5 py-0.2 rounded-md text-[10px] font-mono ${
+                            isSelected ? 'bg-indigo-700/90 text-white' : 'bg-neutral-100 text-neutral-600'
+                          }`}>
+                            {yrGrads.length.toLocaleString()}
+                          </span>
+                          {yrGrads.length > 0 && (
+                            <span className={`text-[10px] font-semibold ${isSelected ? 'text-indigo-200' : 'text-emerald-600'}`}>
+                              • {respRate}%
+                            </span>
+                          )}
+                        </button>
+                      );
+                    })}
+                  </div>
+
+                  {/* View Mode Toggle: Grouped Cohorts vs Unified List */}
+                  <div className="flex items-center space-x-1 bg-white p-1 rounded-xl border border-neutral-200/60 text-xs font-semibold self-start sm:self-center">
+                    <button
+                      onClick={() => setRosterViewMode('grouped')}
+                      className={`flex items-center space-x-1.5 px-3 py-1.5 rounded-lg transition-all cursor-pointer ${
+                        rosterViewMode === 'grouped'
+                          ? 'bg-indigo-50 text-indigo-700 font-bold shadow-2xs'
+                          : 'text-neutral-500 hover:text-neutral-800'
+                      }`}
+                      title="แบ่งแสดงผลแยกกล่องตามปีการศึกษา"
+                    >
+                      <LayoutGrid className="w-3.5 h-3.5" />
+                      <span>แบ่งกลุ่มตามปีการศึกษา</span>
+                    </button>
+                    <button
+                      onClick={() => setRosterViewMode('list')}
+                      className={`flex items-center space-x-1.5 px-3 py-1.5 rounded-lg transition-all cursor-pointer ${
+                        rosterViewMode === 'list'
+                          ? 'bg-indigo-50 text-indigo-700 font-bold shadow-2xs'
+                          : 'text-neutral-500 hover:text-neutral-800'
+                      }`}
+                      title="แสดงเป็นตารางรวมรายการทั้งหมด"
+                    >
+                      <List className="w-3.5 h-3.5" />
+                      <span>ตารางรวม</span>
+                    </button>
+                  </div>
+                </div>
+
+                {/* 4. COHORT SUMMARY STAT CARDS */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+                  {graduateCohortsStats.map((cohort, idx) => {
+                    const isSelected = filterAcademicYear === cohort.year;
+                    const colors = [
+                      { bg: 'bg-indigo-50/70', border: 'border-indigo-100', text: 'text-indigo-700', bar: 'bg-indigo-600' },
+                      { bg: 'bg-violet-50/70', border: 'border-violet-100', text: 'text-violet-700', bar: 'bg-violet-600' },
+                      { bg: 'bg-emerald-50/70', border: 'border-emerald-100', text: 'text-emerald-700', bar: 'bg-emerald-600' },
+                      { bg: 'bg-amber-50/70', border: 'border-amber-100', text: 'text-amber-700', bar: 'bg-amber-600' }
+                    ];
+                    const c = colors[idx % colors.length];
+
+                    return (
+                      <div
+                        key={cohort.year}
+                        className={`p-4 rounded-2xl border transition-all ${
+                          isSelected
+                            ? 'bg-white border-indigo-500 ring-2 ring-indigo-100 shadow-sm'
+                            : 'bg-white border-neutral-200/80 hover:border-neutral-300 shadow-2xs'
+                        }`}
+                      >
+                        <div className="flex items-center justify-between mb-2">
+                          <span className={`inline-flex items-center space-x-1 px-2.5 py-1 rounded-lg text-xs font-bold ${c.bg} ${c.text}`}>
+                            <Calendar className="w-3 h-3" />
+                            <span>ปีการศึกษา {cohort.year}</span>
+                          </span>
+                          <span className="text-[11px] font-mono text-neutral-400">
+                            {cohort.facultiesCount} คณะ
+                          </span>
+                        </div>
+
+                        <div className="space-y-1">
+                          <div className="flex items-baseline justify-between">
+                            <span className="text-2xl font-black text-neutral-900 tracking-tight font-sans">
+                              {cohort.total.toLocaleString()}
+                            </span>
+                            <span className="text-xs text-neutral-500 font-medium">รายชื่อในทำเนียบ</span>
+                          </div>
+
+                          {/* Response Progress */}
+                          <div className="space-y-1 pt-1.5">
+                            <div className="flex justify-between text-[11px] text-neutral-600">
+                              <span>ตอบแบบสำรวจแล้ว</span>
+                              <span className="font-bold text-neutral-800">{cohort.respondedCount.toLocaleString()} ({cohort.responseRate}%)</span>
+                            </div>
+                            <div className="w-full h-1.5 bg-neutral-100 rounded-full overflow-hidden">
+                              <div
+                                className={`h-full ${c.bar} rounded-full transition-all duration-500`}
+                                style={{ width: `${Math.min(100, cohort.responseRate)}%` }}
+                              />
+                            </div>
+                          </div>
+
+                          {/* Degree breakdown chips */}
+                          <div className="flex flex-wrap gap-1 pt-2 text-[10px] text-neutral-500">
+                            <span className="bg-neutral-100 px-1.5 py-0.5 rounded">ป.ตรี {cohort.bachelors}</span>
+                            {cohort.masters > 0 && <span className="bg-neutral-100 px-1.5 py-0.5 rounded">ป.โท {cohort.masters}</span>}
+                            {cohort.doctors > 0 && <span className="bg-neutral-100 px-1.5 py-0.5 rounded">ป.เอก {cohort.doctors}</span>}
+                          </div>
+                        </div>
+
+                        <div className="flex items-center justify-between pt-3 mt-2 border-t border-neutral-100 text-xs">
+                          <button
+                            onClick={() => {
+                              setFilterAcademicYear(cohort.year);
+                            }}
+                            className="font-bold text-indigo-600 hover:text-indigo-800 flex items-center space-x-1 cursor-pointer"
+                          >
+                            <span>{isSelected ? 'กำลังแสดงผล' : 'ดูรายชื่อปีนี้'}</span>
+                            <ChevronRight className="w-3 h-3" />
+                          </button>
+
+                          <div className="flex items-center space-x-1">
+                            <button
+                              onClick={() => handleExportGraduatesCSV(cohort.year)}
+                              className="p-1 text-neutral-400 hover:text-neutral-700 hover:bg-neutral-100 rounded cursor-pointer"
+                              title={`ส่งออก CSV ทำเนียบปี ${cohort.year}`}
+                            >
+                              <Download className="w-3.5 h-3.5" />
+                            </button>
+                            <button
+                              onClick={() => {
+                                setImportTargetType('graduates');
+                                setShowImportModal(true);
+                              }}
+                              className="p-1 text-neutral-400 hover:text-indigo-600 hover:bg-indigo-50 rounded cursor-pointer"
+                              title={`นำเข้าข้อมูลเพิ่มในปี ${cohort.year}`}
+                            >
+                              <Upload className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                {/* 5. Search and Secondary Filters */}
+                <div className="flex flex-col sm:flex-row items-center justify-between gap-3 pt-1">
+                  <div className="relative w-full sm:max-w-md">
+                    <Search className="absolute left-3 top-2.5 w-4 h-4 text-neutral-400" />
+                    <input
+                      type="text"
+                      placeholder="ค้นหาตามรหัสนักศึกษา, ชื่อ-นามสกุล, คณะ, สาขาวิชา..."
+                      value={searchQuery}
+                      onChange={(e) => setSearchQuery(e.target.value)}
+                      className="w-full pl-9 pr-4 py-2 border border-neutral-200 rounded-xl text-xs bg-neutral-50/50 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                    />
+                  </div>
+
+                  <div className="flex items-center space-x-2 w-full sm:w-auto">
+                    <select
+                      value={filterFaculty}
+                      onChange={(e) => setFilterFaculty(e.target.value)}
+                      className="px-3 py-1.5 bg-white border border-neutral-200 text-neutral-700 rounded-xl text-xs font-semibold focus:outline-none focus:ring-1 focus:ring-indigo-500 w-full sm:w-auto"
+                    >
+                      <option value="all">ทุกคณะ</option>
+                      {FACULTIES.map(fac => (
+                        <option key={fac} value={fac}>{fac}</option>
+                      ))}
+                    </select>
+
+                    <select
+                      value={filterResponseStatus}
+                      onChange={(e) => setFilterResponseStatus(e.target.value)}
+                      className="px-3 py-1.5 bg-white border border-neutral-200 text-neutral-700 rounded-xl text-xs font-semibold focus:outline-none focus:ring-1 focus:ring-indigo-500 w-full sm:w-auto"
+                    >
+                      <option value="all">สถานะตอบ (ทั้งหมด)</option>
+                      <option value="responded">ตอบกลับแล้ว</option>
+                      <option value="not_responded">ยังไม่ได้ตอบ</option>
+                    </select>
                   </div>
                 </div>
 
@@ -2911,7 +3288,10 @@ export default function AdminDashboard({ customQuestions, onQuestionsUpdated }: 
                         </button>
                         <button
                           type="button"
-                          onClick={() => fileInputRef.current?.click()}
+                          onClick={() => {
+                            setImportTargetType('graduates');
+                            setShowImportModal(true);
+                          }}
                           className="px-3.5 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-bold transition-all shadow-xs flex items-center space-x-1.5 cursor-pointer"
                         >
                           <Upload className="w-3.5 h-3.5" />
@@ -2922,128 +3302,355 @@ export default function AdminDashboard({ customQuestions, onQuestionsUpdated }: 
                   </div>
                 )}
 
-                {/* Graduates List Table */}
-                <div className="overflow-x-auto rounded-2xl border border-neutral-100">
-                  <table className="w-full text-left border-collapse">
-                    <thead>
-                      <tr className="bg-neutral-50 text-neutral-500 font-bold text-[10px] uppercase h-10 border-b border-neutral-100">
-                        <th className="px-4 py-2 font-sans">ปีการศึกษา</th>
-                        <th className="px-4 py-2 font-sans">ระดับปริญญา</th>
-                        <th className="px-4 py-2 font-sans">รหัสนักศึกษา</th>
-                        <th className="px-4 py-2 font-sans">ชื่อ</th>
-                        <th className="px-4 py-2 font-sans">นามสกุล</th>
-                        <th className="px-4 py-2 font-sans">คณะ</th>
-                        <th className="px-4 py-2 font-sans">สาขา</th>
-                        <th className="px-4 py-2 font-sans">สถานะการตอบกลับ</th>
-                        <th className="px-4 py-2 font-sans text-right">ดำเนินการ</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-neutral-100">
-                      {paginatedGraduates.length === 0 ? (
-                        <tr>
-                          <td colSpan={9} className="text-center py-10 text-neutral-400 font-sans text-xs">
-                            ไม่พบข้อมูลตารางบัณฑิต โปรดกดอัพโหลดนำเข้า CSV หรือเพิ่มรายชื่อเพื่อใช้ทดสอบ
-                          </td>
-                        </tr>
-                      ) : (
-                        paginatedGraduates.map((g) => {
-                          const graduateResponse = responses.find(r => r.studentId === g.studentId);
-                          const nameParts = (g.fullName || '').trim().split(/\s+/);
-                          const firstName = g.firstName || nameParts[0] || '-';
-                          const lastName = g.lastName || nameParts.slice(1).join(' ') || '-';
+                {/* 6. VIEW MODE: GROUPED COHORT ACCORDION CARDS */}
+                {rosterViewMode === 'grouped' ? (
+                  <div className="space-y-5">
+                    {graduateCohortsStats
+                      .filter(cohort => filterAcademicYear === 'all' || cohort.year === filterAcademicYear)
+                      .map((cohort) => {
+                        const isExpanded = expandedCohorts[cohort.year] !== false;
+                        const page = cohortPageMap[cohort.year] || 1;
+                        const pageSize = 25;
+                        const totalPages = Math.ceil(cohort.filteredGraduates.length / pageSize) || 1;
+                        const pagedGrads = cohort.filteredGraduates.slice((page - 1) * pageSize, page * pageSize);
 
-                          return (
-                            <tr key={g.id} className="hover:bg-neutral-50/50 h-11 text-xs text-neutral-700">
-                              <td className="px-4 py-2 font-sans font-medium text-neutral-600 whitespace-nowrap">{g.academicYear}</td>
-                              <td className="px-4 py-2 whitespace-nowrap">
-                                <span className={`inline-flex items-center px-2 py-0.5 rounded-md text-[10.5px] font-bold border ${
-                                  (g.degreeLevel || 'ระดับปริญญาตรี') === 'ระดับปริญญาเอก'
-                                    ? 'bg-orange-50 text-orange-700 border-orange-200'
-                                    : (g.degreeLevel || 'ระดับปริญญาตรี') === 'ระดับปริญญาโท'
-                                    ? 'bg-purple-50 text-purple-700 border-purple-200'
-                                    : 'bg-indigo-50 text-indigo-700 border-indigo-100'
-                                }`}>
-                                  {g.degreeLevel || 'ระดับปริญญาตรี'}
-                                </span>
-                              </td>
-                              <td className="px-4 py-2 font-mono font-semibold text-neutral-800 whitespace-nowrap">{g.studentId}</td>
-                              <td className="px-4 py-2 font-sans font-medium whitespace-nowrap">{firstName}</td>
-                              <td className="px-4 py-2 font-sans font-medium whitespace-nowrap">{lastName}</td>
-                              <td className="px-4 py-2 font-sans text-xs">{g.faculty}</td>
-                              <td className="px-4 py-2 font-sans text-xs text-neutral-600">{g.major}</td>
-                              <td className="px-4 py-2 font-sans whitespace-nowrap">
-                                {graduateResponse ? (
-                                  <div className="flex flex-col items-start space-y-0.5">
-                                    <button
-                                      onClick={() => setSelectedResponse(graduateResponse)}
-                                      className="inline-flex items-center space-x-1.5 px-2.5 py-1 rounded-full bg-emerald-50 text-emerald-700 hover:bg-emerald-100 border border-emerald-150 transition-colors text-[10px] font-semibold font-sans cursor-pointer"
-                                      title="คลิกเพื่อดูคำตอบ"
-                                    >
-                                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
-                                      <span>ตอบกลับแล้ว</span>
-                                    </button>
-                                    <span className="text-[9px] text-neutral-400 font-mono pl-1">
-                                      {formatResponseDate(graduateResponse.createdAt)}
+                        return (
+                          <div key={cohort.year} className="border border-neutral-200/90 rounded-2xl overflow-hidden shadow-2xs bg-white">
+                            {/* Cohort Header Bar */}
+                            <div 
+                              onClick={() => toggleCohortExpanded(cohort.year)}
+                              className="bg-neutral-50/90 hover:bg-neutral-100/70 px-5 py-3.5 border-b border-neutral-200/60 flex flex-col md:flex-row md:items-center justify-between gap-3 cursor-pointer transition-colors"
+                            >
+                              <div className="flex items-center space-x-3">
+                                <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-indigo-600 to-violet-600 text-white flex items-center justify-center shadow-xs font-bold text-xs">
+                                  {cohort.year}
+                                </div>
+                                <div>
+                                  <div className="flex items-center space-x-2">
+                                    <h4 className="font-bold text-sm text-neutral-900">
+                                      ทำเนียบรายชื่อ ปีการศึกษา {cohort.year}
+                                    </h4>
+                                    <span className="px-2.5 py-0.5 rounded-full bg-indigo-50 text-indigo-700 border border-indigo-100/70 text-[10.5px] font-bold">
+                                      {cohort.filteredGraduates.length.toLocaleString()} รายชื่อ
                                     </span>
                                   </div>
-                                ) : (
-                                  <span className="inline-flex items-center space-x-1.5 px-2.5 py-1 rounded-full bg-neutral-50 text-neutral-400 border border-neutral-100 text-[10px] font-medium font-sans">
-                                    <span className="w-1.5 h-1.5 rounded-full bg-neutral-300"></span>
-                                    <span>ยังไม่ตอบ</span>
-                                  </span>
-                                )}
-                              </td>
-                              <td className="px-4 py-2 text-right whitespace-nowrap">
-                                <div className="flex justify-end space-x-1">
-                                  <button
-                                    onClick={() => startEditGraduate(g)}
-                                    className="p-1 text-neutral-400 hover:text-indigo-600 hover:bg-indigo-50 rounded cursor-pointer"
-                                    title="แก้ไขข้อมูล"
-                                  >
-                                    <Edit3 className="w-3.5 h-3.5" />
-                                  </button>
-                                  <button
-                                    onClick={() => handleDeleteGraduate(g.id || '')}
-                                    className="p-1 text-neutral-400 hover:text-red-500 hover:bg-red-50 rounded cursor-pointer"
-                                    title="ลบรายชื่อ"
-                                  >
-                                    <Trash2 className="w-3.5 h-3.5" />
-                                  </button>
+                                  <p className="text-[11px] text-neutral-500 mt-0.5">
+                                    ตอบแบบสำรวจแล้ว {cohort.respondedCount.toLocaleString()} คน ({cohort.responseRate}%) • ยังไม่ตอบ {cohort.pendingCount.toLocaleString()} คน
+                                  </p>
                                 </div>
+                              </div>
+
+                              <div className="flex items-center space-x-2" onClick={(e) => e.stopPropagation()}>
+                                <button
+                                  onClick={() => {
+                                    setIsEditingGrad(false);
+                                    setGradForm({
+                                      studentId: '',
+                                      fullName: '',
+                                      degreeLevel: 'ระดับปริญญาตรี',
+                                      faculty: FACULTIES[0],
+                                      major: MAJORS[FACULTIES[0]][0],
+                                      academicYear: cohort.year
+                                    });
+                                    setShowGradModal(true);
+                                  }}
+                                  className="px-3 py-1.5 bg-white hover:bg-neutral-50 border border-neutral-200 text-neutral-700 rounded-xl text-xs font-semibold flex items-center space-x-1 shadow-2xs cursor-pointer"
+                                  title={`เพิ่มรายชื่อในปี ${cohort.year}`}
+                                >
+                                  <Plus className="w-3.5 h-3.5 text-indigo-600" />
+                                  <span className="hidden sm:inline">เพิ่มรายชื่อปีนี้</span>
+                                </button>
+
+                                <button
+                                  onClick={() => {
+                                    setImportTargetType('graduates');
+                                    setShowImportModal(true);
+                                  }}
+                                  className="px-3 py-1.5 bg-white hover:bg-neutral-50 border border-neutral-200 text-neutral-700 rounded-xl text-xs font-semibold flex items-center space-x-1 shadow-2xs cursor-pointer"
+                                  title={`นำเข้าไฟล์ CSV เพิ่มในปี ${cohort.year}`}
+                                >
+                                  <Upload className="w-3.5 h-3.5 text-violet-600" />
+                                  <span className="hidden sm:inline">นำเข้า CSV</span>
+                                </button>
+
+                                <button
+                                  onClick={() => handleExportGraduatesCSV(cohort.year)}
+                                  className="px-3 py-1.5 bg-white hover:bg-neutral-50 border border-neutral-200 text-neutral-700 rounded-xl text-xs font-semibold flex items-center space-x-1 shadow-2xs cursor-pointer"
+                                  title={`ส่งออก CSV ทำเนียบปี ${cohort.year}`}
+                                >
+                                  <Download className="w-3.5 h-3.5 text-emerald-600" />
+                                  <span className="hidden sm:inline">ส่งออก CSV</span>
+                                </button>
+
+                                <button
+                                  onClick={() => toggleCohortExpanded(cohort.year)}
+                                  className="p-1.5 hover:bg-neutral-200/70 rounded-lg text-neutral-500 transition-colors cursor-pointer"
+                                >
+                                  {isExpanded ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+                                </button>
+                              </div>
+                            </div>
+
+                            {/* Cohort Body */}
+                            {isExpanded && (
+                              <div>
+                                {cohort.filteredGraduates.length === 0 ? (
+                                  <div className="py-10 text-center text-neutral-400 font-sans text-xs bg-white">
+                                    ไม่พบรายชื่อในทำเนียบบัณฑิต ปีการศึกษา {cohort.year} ตามเงื่อนไขตัวกรอง
+                                  </div>
+                                ) : (
+                                  <>
+                                    <div className="overflow-x-auto bg-white">
+                                      <table className="w-full text-left border-collapse">
+                                        <thead>
+                                          <tr className="bg-neutral-50/70 text-neutral-500 font-bold text-[10px] uppercase h-9 border-b border-neutral-100">
+                                            <th className="px-4 py-2 font-sans">ระดับปริญญา</th>
+                                            <th className="px-4 py-2 font-sans">รหัสนักศึกษา</th>
+                                            <th className="px-4 py-2 font-sans">ชื่อ</th>
+                                            <th className="px-4 py-2 font-sans">นามสกุล</th>
+                                            <th className="px-4 py-2 font-sans">คณะ</th>
+                                            <th className="px-4 py-2 font-sans">สาขา</th>
+                                            <th className="px-4 py-2 font-sans">สถานะการตอบกลับ</th>
+                                            <th className="px-4 py-2 font-sans text-right">ดำเนินการ</th>
+                                          </tr>
+                                        </thead>
+                                        <tbody className="divide-y divide-neutral-100">
+                                          {pagedGrads.map((g) => {
+                                            const graduateResponse = responses.find(r => r.studentId === g.studentId);
+                                            const nameParts = (g.fullName || '').trim().split(/\s+/);
+                                            const firstName = g.firstName || nameParts[0] || '-';
+                                            const lastName = g.lastName || nameParts.slice(1).join(' ') || '-';
+
+                                            return (
+                                              <tr key={g.id || g.studentId} className="hover:bg-neutral-50/50 h-11 text-xs text-neutral-700">
+                                                <td className="px-4 py-2 whitespace-nowrap">
+                                                  <span className={`inline-flex items-center px-2 py-0.5 rounded-md text-[10.5px] font-bold border ${
+                                                    (g.degreeLevel || 'ระดับปริญญาตรี') === 'ระดับปริญญาเอก'
+                                                      ? 'bg-orange-50 text-orange-700 border-orange-200'
+                                                      : (g.degreeLevel || 'ระดับปริญญาตรี') === 'ระดับปริญญาโท'
+                                                      ? 'bg-purple-50 text-purple-700 border-purple-200'
+                                                      : 'bg-indigo-50 text-indigo-700 border-indigo-100'
+                                                  }`}>
+                                                    {g.degreeLevel || 'ระดับปริญญาตรี'}
+                                                  </span>
+                                                </td>
+                                                <td className="px-4 py-2 font-mono font-semibold text-neutral-800 whitespace-nowrap">{g.studentId}</td>
+                                                <td className="px-4 py-2 font-sans font-medium whitespace-nowrap">{firstName}</td>
+                                                <td className="px-4 py-2 font-sans font-medium whitespace-nowrap">{lastName}</td>
+                                                <td className="px-4 py-2 font-sans text-xs">{g.faculty}</td>
+                                                <td className="px-4 py-2 font-sans text-xs text-neutral-600">{g.major}</td>
+                                                <td className="px-4 py-2 font-sans whitespace-nowrap">
+                                                  {graduateResponse ? (
+                                                    <div className="flex flex-col items-start space-y-0.5">
+                                                      <button
+                                                        onClick={() => setSelectedResponse(graduateResponse)}
+                                                        className="inline-flex items-center space-x-1.5 px-2.5 py-1 rounded-full bg-emerald-50 text-emerald-700 hover:bg-emerald-100 border border-emerald-150 transition-colors text-[10px] font-semibold font-sans cursor-pointer"
+                                                        title="คลิกเพื่อดูคำตอบ"
+                                                      >
+                                                        <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
+                                                        <span>ตอบกลับแล้ว</span>
+                                                      </button>
+                                                      <span className="text-[9px] text-neutral-400 font-mono pl-1">
+                                                        {formatResponseDate(graduateResponse.createdAt)}
+                                                      </span>
+                                                    </div>
+                                                  ) : (
+                                                    <span className="inline-flex items-center space-x-1.5 px-2.5 py-1 rounded-full bg-neutral-50 text-neutral-400 border border-neutral-100 text-[10px] font-medium font-sans">
+                                                      <span className="w-1.5 h-1.5 rounded-full bg-neutral-300"></span>
+                                                      <span>ยังไม่ตอบ</span>
+                                                    </span>
+                                                  )}
+                                                </td>
+                                                <td className="px-4 py-2 text-right whitespace-nowrap">
+                                                  <div className="flex justify-end space-x-1">
+                                                    <button
+                                                      onClick={() => startEditGraduate(g)}
+                                                      className="p-1 text-neutral-400 hover:text-indigo-600 hover:bg-indigo-50 rounded cursor-pointer"
+                                                      title="แก้ไขข้อมูล"
+                                                    >
+                                                      <Edit3 className="w-3.5 h-3.5" />
+                                                    </button>
+                                                    <button
+                                                      onClick={() => handleDeleteGraduate(g.id || '')}
+                                                      className="p-1 text-neutral-400 hover:text-red-500 hover:bg-red-50 rounded cursor-pointer"
+                                                      title="ลบรายชื่อ"
+                                                    >
+                                                      <Trash2 className="w-3.5 h-3.5" />
+                                                    </button>
+                                                  </div>
+                                                </td>
+                                              </tr>
+                                            );
+                                          })}
+                                        </tbody>
+                                      </table>
+                                    </div>
+
+                                    {/* Cohort Pagination Controls */}
+                                    {cohort.filteredGraduates.length > pageSize && (
+                                      <div className="flex flex-col sm:flex-row items-center justify-between p-3 bg-neutral-50/60 border-t border-neutral-100 gap-2 text-xs text-neutral-500">
+                                        <span>
+                                          แสดงรายการที่ <strong>{(page - 1) * pageSize + 1}</strong> ถึง <strong>{Math.min(page * pageSize, cohort.filteredGraduates.length)}</strong> จากทั้งหมด <strong>{cohort.filteredGraduates.length}</strong> รายการ (ปีการศึกษา {cohort.year})
+                                        </span>
+                                        <div className="flex items-center space-x-1.5">
+                                          <button
+                                            onClick={() => setCohortPageMap(prev => ({ ...prev, [cohort.year]: Math.max(1, page - 1) }))}
+                                            disabled={page === 1}
+                                            className="px-2.5 py-1 rounded-lg border border-neutral-200 bg-white font-semibold text-neutral-700 hover:bg-neutral-50 disabled:opacity-40 transition-colors cursor-pointer"
+                                          >
+                                            ก่อนหน้า
+                                          </button>
+                                          <span className="px-2 font-semibold text-neutral-700">
+                                            หน้า {page} / {totalPages}
+                                          </span>
+                                          <button
+                                            onClick={() => setCohortPageMap(prev => ({ ...prev, [cohort.year]: Math.min(totalPages, page + 1) }))}
+                                            disabled={page === totalPages}
+                                            className="px-2.5 py-1 rounded-lg border border-neutral-200 bg-white font-semibold text-neutral-700 hover:bg-neutral-50 disabled:opacity-40 transition-colors cursor-pointer"
+                                          >
+                                            ถัดไป
+                                          </button>
+                                        </div>
+                                      </div>
+                                    )}
+                                  </>
+                                )}
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+                  </div>
+                ) : (
+                  /* 7. VIEW MODE: UNIFIED TABLE VIEW WITH YEAR COLUMN */
+                  <div className="space-y-4">
+                    <div className="overflow-x-auto rounded-2xl border border-neutral-100">
+                      <table className="w-full text-left border-collapse">
+                        <thead>
+                          <tr className="bg-neutral-50 text-neutral-500 font-bold text-[10px] uppercase h-10 border-b border-neutral-100">
+                            <th className="px-4 py-2 font-sans">ปีการศึกษา</th>
+                            <th className="px-4 py-2 font-sans">ระดับปริญญา</th>
+                            <th className="px-4 py-2 font-sans">รหัสนักศึกษา</th>
+                            <th className="px-4 py-2 font-sans">ชื่อ</th>
+                            <th className="px-4 py-2 font-sans">นามสกุล</th>
+                            <th className="px-4 py-2 font-sans">คณะ</th>
+                            <th className="px-4 py-2 font-sans">สาขา</th>
+                            <th className="px-4 py-2 font-sans">สถานะการตอบกลับ</th>
+                            <th className="px-4 py-2 font-sans text-right">ดำเนินการ</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-neutral-100">
+                          {paginatedGraduates.length === 0 ? (
+                            <tr>
+                              <td colSpan={9} className="text-center py-10 text-neutral-400 font-sans text-xs">
+                                ไม่พบข้อมูลตารางบัณฑิต โปรดกดอัพโหลดนำเข้า CSV หรือเพิ่มรายชื่อเพื่อใช้ทดสอบ
                               </td>
                             </tr>
-                          );
-                        })
-                      )}
-                    </tbody>
-                  </table>
-                </div>
+                          ) : (
+                            paginatedGraduates.map((g) => {
+                              const graduateResponse = responses.find(r => r.studentId === g.studentId);
+                              const nameParts = (g.fullName || '').trim().split(/\s+/);
+                              const firstName = g.firstName || nameParts[0] || '-';
+                              const lastName = g.lastName || nameParts.slice(1).join(' ') || '-';
 
-                {/* Pagination Controls */}
-                {filteredGraduates.length > itemsPerPage && (
-                  <div className="flex flex-col sm:flex-row items-center justify-between pt-4 border-t border-neutral-100 gap-4 font-sans">
-                    <span className="text-xs text-neutral-500">
-                      แสดงรายการที่ <strong>{startIndexGrads + 1}</strong> ถึง <strong>{Math.min(startIndexGrads + itemsPerPage, filteredGraduates.length)}</strong> จากทั้งหมด <strong>{filteredGraduates.length}</strong> รายการ
-                    </span>
-                    <div className="flex items-center space-x-2">
-                      <button
-                        onClick={() => setGraduatesPage(prev => Math.max(prev - 1, 1))}
-                        disabled={graduatesPage === 1}
-                        className="px-3 py-1.5 rounded-xl border border-neutral-200 text-xs font-semibold text-neutral-600 hover:bg-neutral-50 disabled:opacity-50 transition-colors cursor-pointer"
-                      >
-                        ก่อนหน้า
-                      </button>
-                      <span className="text-xs text-neutral-600 font-semibold px-2">
-                        หน้า {graduatesPage} / {totalGradPages}
-                      </span>
-                      <button
-                        onClick={() => setGraduatesPage(prev => Math.min(prev + 1, totalGradPages))}
-                        disabled={graduatesPage === totalGradPages}
-                        className="px-3 py-1.5 rounded-xl border border-neutral-200 text-xs font-semibold text-neutral-600 hover:bg-neutral-50 disabled:opacity-50 transition-colors cursor-pointer"
-                      >
-                        ถัดไป
-                      </button>
+                              return (
+                                <tr key={g.id} className="hover:bg-neutral-50/50 h-11 text-xs text-neutral-700">
+                                  <td className="px-4 py-2 font-sans font-medium text-neutral-600 whitespace-nowrap">
+                                    <span className="px-2 py-0.5 rounded-md bg-neutral-100 font-mono text-[11px] font-bold">
+                                      {g.academicYear}
+                                    </span>
+                                  </td>
+                                  <td className="px-4 py-2 whitespace-nowrap">
+                                    <span className={`inline-flex items-center px-2 py-0.5 rounded-md text-[10.5px] font-bold border ${
+                                      (g.degreeLevel || 'ระดับปริญญาตรี') === 'ระดับปริญญาเอก'
+                                        ? 'bg-orange-50 text-orange-700 border-orange-200'
+                                        : (g.degreeLevel || 'ระดับปริญญาตรี') === 'ระดับปริญญาโท'
+                                        ? 'bg-purple-50 text-purple-700 border-purple-200'
+                                        : 'bg-indigo-50 text-indigo-700 border-indigo-100'
+                                    }`}>
+                                      {g.degreeLevel || 'ระดับปริญญาตรี'}
+                                    </span>
+                                  </td>
+                                  <td className="px-4 py-2 font-mono font-semibold text-neutral-800 whitespace-nowrap">{g.studentId}</td>
+                                  <td className="px-4 py-2 font-sans font-medium whitespace-nowrap">{firstName}</td>
+                                  <td className="px-4 py-2 font-sans font-medium whitespace-nowrap">{lastName}</td>
+                                  <td className="px-4 py-2 font-sans text-xs">{g.faculty}</td>
+                                  <td className="px-4 py-2 font-sans text-xs text-neutral-600">{g.major}</td>
+                                  <td className="px-4 py-2 font-sans whitespace-nowrap">
+                                    {graduateResponse ? (
+                                      <div className="flex flex-col items-start space-y-0.5">
+                                        <button
+                                          onClick={() => setSelectedResponse(graduateResponse)}
+                                          className="inline-flex items-center space-x-1.5 px-2.5 py-1 rounded-full bg-emerald-50 text-emerald-700 hover:bg-emerald-100 border border-emerald-150 transition-colors text-[10px] font-semibold font-sans cursor-pointer"
+                                          title="คลิกเพื่อดูคำตอบ"
+                                        >
+                                          <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
+                                          <span>ตอบกลับแล้ว</span>
+                                        </button>
+                                        <span className="text-[9px] text-neutral-400 font-mono pl-1">
+                                          {formatResponseDate(graduateResponse.createdAt)}
+                                        </span>
+                                      </div>
+                                    ) : (
+                                      <span className="inline-flex items-center space-x-1.5 px-2.5 py-1 rounded-full bg-neutral-50 text-neutral-400 border border-neutral-100 text-[10px] font-medium font-sans">
+                                        <span className="w-1.5 h-1.5 rounded-full bg-neutral-300"></span>
+                                        <span>ยังไม่ตอบ</span>
+                                      </span>
+                                    )}
+                                  </td>
+                                  <td className="px-4 py-2 text-right whitespace-nowrap">
+                                    <div className="flex justify-end space-x-1">
+                                      <button
+                                        onClick={() => startEditGraduate(g)}
+                                        className="p-1 text-neutral-400 hover:text-indigo-600 hover:bg-indigo-50 rounded cursor-pointer"
+                                        title="แก้ไขข้อมูล"
+                                      >
+                                        <Edit3 className="w-3.5 h-3.5" />
+                                      </button>
+                                      <button
+                                        onClick={() => handleDeleteGraduate(g.id || '')}
+                                        className="p-1 text-neutral-400 hover:text-red-500 hover:bg-red-50 rounded cursor-pointer"
+                                        title="ลบรายชื่อ"
+                                      >
+                                        <Trash2 className="w-3.5 h-3.5" />
+                                      </button>
+                                    </div>
+                                  </td>
+                                </tr>
+                              );
+                            })
+                          )}
+                        </tbody>
+                      </table>
                     </div>
+
+                    {/* Pagination Controls */}
+                    {filteredGraduates.length > itemsPerPage && (
+                      <div className="flex flex-col sm:flex-row items-center justify-between pt-4 border-t border-neutral-100 gap-4 font-sans">
+                        <span className="text-xs text-neutral-500">
+                          แสดงรายการที่ <strong>{startIndexGrads + 1}</strong> ถึง <strong>{Math.min(startIndexGrads + itemsPerPage, filteredGraduates.length)}</strong> จากทั้งหมด <strong>{filteredGraduates.length}</strong> รายการ
+                        </span>
+                        <div className="flex items-center space-x-2">
+                          <button
+                            onClick={() => setGraduatesPage(prev => Math.max(prev - 1, 1))}
+                            disabled={graduatesPage === 1}
+                            className="px-3 py-1.5 rounded-xl border border-neutral-200 text-xs font-semibold text-neutral-600 hover:bg-neutral-50 disabled:opacity-50 transition-colors cursor-pointer"
+                          >
+                            ก่อนหน้า
+                          </button>
+                          <span className="text-xs text-neutral-600 font-semibold px-2">
+                            หน้า {graduatesPage} / {totalGradPages}
+                          </span>
+                          <button
+                            onClick={() => setGraduatesPage(prev => Math.min(prev + 1, totalGradPages))}
+                            disabled={graduatesPage === totalGradPages}
+                            className="px-3 py-1.5 rounded-xl border border-neutral-200 text-xs font-semibold text-neutral-600 hover:bg-neutral-50 disabled:opacity-50 transition-colors cursor-pointer"
+                          >
+                            ถัดไป
+                          </button>
+                        </div>
+                      </div>
+                    )}
                   </div>
                 )}
 
@@ -3075,6 +3682,18 @@ export default function AdminDashboard({ customQuestions, onQuestionsUpdated }: 
                       <option value="all">ทุกคณะการศึกษา</option>
                       {FACULTIES.map(fac => <option key={fac} value={fac}>{fac}</option>)}
                     </select>
+
+                    <button
+                      onClick={() => {
+                        setImportTargetType('responses');
+                        setShowImportModal(true);
+                      }}
+                      className="flex items-center space-x-1 px-3.5 py-2 border border-indigo-200 bg-indigo-50/70 hover:bg-indigo-100 text-indigo-700 rounded-xl text-xs font-semibold shadow-2xs transition-all cursor-pointer"
+                      title="นำเข้าผลการตอบแบบสำรวจย้อนหลังตามปีการศึกษา"
+                    >
+                      <Upload className="w-3.5 h-3.5" />
+                      <span>นำเข้าผลสำรวจตามปีการศึกษา</span>
+                    </button>
 
                     <button
                       onClick={handleExportResponses}
@@ -3304,6 +3923,20 @@ export default function AdminDashboard({ customQuestions, onQuestionsUpdated }: 
                 )}
 
               </div>
+            )}
+
+            {/* TAB CONTENT: SURVEY PREVIEW & LIVE QUESTIONNAIRE EDITOR */}
+            {activeTab === 'survey_preview' && (
+              <SurveyPreviewEditor
+                customQuestions={customQuestions}
+                onQuestionsUpdated={onQuestionsUpdated}
+                surveyConfig={surveyConfig || DEFAULT_SURVEY_CONFIG}
+                onSurveyConfigUpdated={(newCfg) => {
+                  if (onSurveyConfigUpdated) {
+                    onSurveyConfigUpdated(newCfg);
+                  }
+                }}
+              />
             )}
 
             {/* TAB CONTENT: SPECIAL CUSTOM AUXILIARY QUESTIONS CONFIGURATION */}
@@ -4134,6 +4767,22 @@ export default function AdminDashboard({ customQuestions, onQuestionsUpdated }: 
           </div>
         </div>
       )}
+
+      {/* MODAL: IMPORT DATA BY ACADEMIC YEAR */}
+      <ImportDataModal
+        isOpen={showImportModal}
+        onClose={() => setShowImportModal(false)}
+        defaultYear={filterAcademicYear !== 'all' ? filterAcademicYear : '2568'}
+        availableYears={allAvailableAcademicYears}
+        initialTargetType={importTargetType}
+        graduatesList={graduates}
+        onImportComplete={(year, type, count) => {
+          setCsvResult(`นำเข้าข้อมูล ${type === 'graduates' ? 'ทำเนียบบัณฑิต' : 'ผลสำรวจ'} สำเร็จจำนวน ${count.toLocaleString()} รายการ สำหรับปีการศึกษา ${year}`);
+          if (filterAcademicYear !== 'all' && filterAcademicYear !== year) {
+            setFilterAcademicYear(year);
+          }
+        }}
+      />
 
     </div>
   );
